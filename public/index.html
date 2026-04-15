@@ -77,7 +77,7 @@
           </label>
           <label class="field">
             买入时机 · 结束（距开盘秒）
-            <input type="number" id="calc-t1" min="0" max="300" step="1" value="50" />
+            <input type="number" id="calc-t1" min="0" max="300" step="1" value="28" />
           </label>
           <label class="field">
             卖出价格（已买入那一侧 mid ≥ 此价即触发卖出）
@@ -101,7 +101,6 @@
           <strong>−买入价×份数</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
         </p>
         <div id="calc-verdict" class="pair-calculator__verdict mono" aria-live="polite"></div>
-        <pre class="pair-calculator__detail mono" id="calc-result"></pre>
         <h3 class="pair-calculator__batch-chart-title">全量盈亏分布</h3>
         <div
           class="chart-wrap chart-wrap--batch"
@@ -110,6 +109,7 @@
         >
           <canvas id="calc-batch-chart"></canvas>
         </div>
+        <pre class="pair-calculator__detail mono" id="calc-result"></pre>
       </section>
 
       <p class="footnote muted">
