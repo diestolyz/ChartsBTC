@@ -3,6 +3,13 @@
  * 仅 market-windows 与刷新用 HTTP；支持按市场 slug 切换归档时间段。
  */
 
+import {
+  WINDOW_SEC,
+  num,
+  secondsFromWindowOpen,
+  computeLegPnlFromRows,
+} from "./legPairPnl.mjs";
+
 const chartCanvas = document.getElementById("chart");
 const limitInput = document.getElementById("limit-input");
 const refreshBtn = document.getElementById("refresh-btn");
@@ -53,37 +60,23 @@ function paintConnLabel() {
     : upstreamStatusLine;
 }
 
-/** 与 Polymarket 5m 盘一致：横轴固定 0–300 秒 */
-const WINDOW_SEC = 300;
+/** 「计算全量」明细列表最多展示行数（超出部分在文案末尾提示条数） */
+const CALC_BATCH_DETAIL_MAX_LINES = 400;
 
-function num(v) {
-  if (v == null || v === "") return null;
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : null;
-}
+const AUTH_STATUS_URL = "/api/auth/status";
 
-/** `btc-updown-5m-{unix}` → 窗口起点 Unix 秒 */
-function windowStartSecFromSlug(slug) {
-  if (!slug || typeof slug !== "string") return null;
-  const m = slug.match(/-(\d{8,})$/);
-  if (!m) return null;
-  const sec = Number(m[1]);
-  return Number.isFinite(sec) ? sec : null;
-}
-
-/**
- * @param {number} ts_ms
- * @param {string | null} slug
- * @param {unknown[]} rowsAsc - 升序，供无 slug 时退化为「首条为 0 秒」
- */
-function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
-  const w0 = windowStartSecFromSlug(slug);
-  if (w0 != null) return ts_ms / 1000 - w0;
-  if (rowsAsc.length > 0) {
-    const t0 = num(rowsAsc[0].ts_ms);
-    if (t0 != null) return (ts_ms - t0) / 1000;
+async function fetchAuthStatus() {
+  try {
+    const r = await fetch(AUTH_STATUS_URL, { credentials: "same-origin" });
+    if (!r.ok) return { authEnabled: false, authenticated: true };
+    const j = await r.json();
+    return {
+      authEnabled: Boolean(j.authEnabled),
+      authenticated: Boolean(j.authenticated),
+    };
+  } catch {
+    return { authEnabled: false, authenticated: true };
   }
-  return 0;
 }
 
 function formatWindowOption(w) {
@@ -457,7 +450,7 @@ async function loadMarketWindows() {
   if (!marketSelect) return;
   const prev = chartSlugOverride ?? "";
   try {
-    const res = await fetch("/api/market-windows?limit=96");
+    const res = await fetch("/api/market-windows?limit=96", { credentials: "same-origin" });
     const j = await res.json();
     const windows = Array.isArray(j.windows) ? j.windows : [];
     marketSelect.innerHTML = "";
@@ -546,6 +539,143 @@ const calcSubmit = document.getElementById("calc-submit");
 const calcResult = document.getElementById("calc-result");
 const calcVerdict = document.getElementById("calc-verdict");
 const calcFullBatch = document.getElementById("calc-full-batch");
+const calcBatchCanvas = document.getElementById("calc-batch-chart");
+
+/** @type {any} */
+let calcBatchChart = null;
+
+/** 全量盈亏图：X 轴与 tooltip 用本地 24 小时制 */
+function formatBatchChartDateTime(ms, withSeconds) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return "";
+  return new Date(n).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(withSeconds ? { second: "2-digit" } : {}),
+    hour12: false,
+  });
+}
+
+function destroyCalcBatchChart() {
+  if (calcBatchChart) {
+    try {
+      calcBatchChart.destroy();
+    } catch {
+      /* noop */
+    }
+    calcBatchChart = null;
+  }
+}
+
+/**
+ * 全量明细图：仅含已触发买入的盘——平仓（closed）与浮亏（float）；未买/无点等不绘制。
+ * X = 窗口起点时间（ms），Y = 该盘 netUsd。
+ * @param {unknown[]} details
+ */
+function updateCalcBatchChart(details) {
+  if (!calcBatchCanvas || typeof Chart === "undefined") return;
+  destroyCalcBatchChart();
+  const rows = Array.isArray(details)
+    ? details.filter((d) => {
+        if (!d || typeof d !== "object") return false;
+        const o = /** @type {{ startMs?: unknown; netUsd?: unknown; code?: unknown }} */ (d);
+        const code = typeof o.code === "string" ? o.code : "";
+        if (code !== "closed" && code !== "float") return false;
+        return (
+          typeof o.startMs === "number" &&
+          Number.isFinite(o.startMs) &&
+          typeof o.netUsd === "number" &&
+          Number.isFinite(o.netUsd)
+        );
+      })
+    : [];
+  if (!rows.length) return;
+
+  const sorted = /** @type {{ startMs: number; netUsd: number; timeRange?: string; tag?: string }[]} */ (
+    [...rows].sort((a, b) => a.startMs - b.startMs)
+  );
+  const data = sorted.map((d) => ({ x: d.startMs, y: d.netUsd }));
+  const colors = sorted.map((d) =>
+    d.netUsd >= 0 ? "rgba(74, 222, 128, 0.85)" : "rgba(248, 113, 113, 0.85)",
+  );
+
+  calcBatchChart = new Chart(calcBatchCanvas, {
+    type: "scatter",
+    data: {
+      datasets: [
+        {
+          label: "各盘盈亏 (USD)",
+          data,
+          parsing: false,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+          pointBackgroundColor: colors,
+          pointBorderColor: "rgba(255,255,255,0.25)",
+          pointBorderWidth: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: "#c4c9d4" },
+        },
+        tooltip: {
+          callbacks: {
+            title(items) {
+              const x = items[0]?.parsed?.x;
+              return formatBatchChartDateTime(x, true);
+            },
+            label(ctx) {
+              const i = ctx.dataIndex;
+              const d = sorted[i];
+              const tr = d?.timeRange != null ? String(d.timeRange) : "";
+              const tag = d?.tag != null ? String(d.tag) : "";
+              const y = ctx.parsed.y;
+              const usd =
+                typeof y === "number" && Number.isFinite(y)
+                  ? y.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+                  : String(y);
+              const bits = [`盈亏 ${usd} USD`];
+              if (tag) bits.push(tag);
+              if (tr) bits.push(tr);
+              return bits.join(" · ");
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: "linear",
+          title: {
+            display: true,
+            text: "市场窗口起点（本地时间 · 24 小时制）",
+            color: "#9ca3af",
+          },
+          grid: { color: "rgba(255,255,255,0.06)" },
+          ticks: {
+            color: "#8a8f98",
+            maxRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: 12,
+            callback(v) {
+              return formatBatchChartDateTime(v, false) || String(v);
+            },
+          },
+        },
+        y: {
+          title: { display: true, text: "盈亏 (USD)", color: "#9ca3af" },
+          grid: { color: "rgba(255,255,255,0.06)" },
+          ticks: { color: "#8a8f98" },
+        },
+      },
+    },
+  });
+}
 
 /**
  * @param {"profit" | "loss" | "neutral" | "warn"} kind
@@ -564,117 +694,8 @@ function fmtUsdCalc(v) {
   return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 }
 
-/**
- * 全量明细用：`M/D HH:mm → HH:mm`，右侧为同一小时、分钟 = 左侧分钟 +5（不进位，故可为 :60）。
- * 起点优先 min_ts_ms，否则 slug 尾缀 unix。
- * @param {{ min_ts_ms?: unknown; max_ts_ms?: unknown }} w
- * @param {string} slug
- */
-function formatBatchMarketTimeRange(w, slug) {
-  const minMs = w.min_ts_ms != null ? Number(w.min_ts_ms) : NaN;
-  let startMs = Number.isFinite(minMs) ? minMs : null;
-
-  if (startMs == null) {
-    const m = slug.match(/-(\d{8,})$/);
-    if (m) {
-      const sec = Number(m[1]);
-      if (Number.isFinite(sec)) startMs = sec * 1000;
-    }
-  }
-  if (startMs == null) return "—";
-
-  const da = new Date(startMs);
-  const mo = da.getMonth() + 1;
-  const day = da.getDate();
-  const h = da.getHours();
-  const min = da.getMinutes();
-  const mdHm = `${mo}/${day} ${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
-  const endMin = min + 5;
-  const rightT = `${String(h).padStart(2, "0")}:${String(endMin).padStart(2, "0")}`;
-  return `${mdHm} → ${rightT}`;
-}
-
 function getCalcMarketSlug() {
   return chartSlugOverride != null && chartSlugOverride !== "" ? chartSlugOverride : activeSlug;
-}
-
-/**
- * @param {unknown[]} rows
- * @param {string | null} slug
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number }}
- */
-function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N) {
-  if (!slug || typeof slug !== "string") {
-    return { code: "no_slug", netUsd: 0 };
-  }
-  if (!Array.isArray(rows) || !rows.length) {
-    return { code: "no_data", netUsd: 0 };
-  }
-  const points = [];
-  for (const r of rows) {
-    const ts = num(r.ts_ms);
-    if (ts == null) continue;
-    const u = num(r.up_mid);
-    const d = num(r.down_mid);
-    if (u == null || d == null) continue;
-    const sec = secondsFromWindowOpen(ts, slug, rows);
-    if (sec < 0 || sec > WINDOW_SEC) continue;
-    points.push({ sec, u, d });
-  }
-  if (!points.length) {
-    return { code: "no_points", netUsd: 0 };
-  }
-  const buyIdx = points.findIndex(
-    (p) => p.sec >= t0 && p.sec <= t1 && (p.u <= P_buyLimit || p.d <= P_buyLimit),
-  );
-  if (buyIdx < 0) {
-    return { code: "no_buy", netUsd: 0 };
-  }
-  const pBuy = points[buyIdx];
-  const legUp = pBuy.u <= P_buyLimit;
-  const leg = legUp ? "up" : "down";
-  const P_entry = leg === "up" ? pBuy.u : pBuy.d;
-  const t_entry = pBuy.sec;
-  if (P_entry <= 0) {
-    return { code: "bad_entry", netUsd: 0 };
-  }
-  let sellIdx = -1;
-  for (let j = buyIdx + 1; j < points.length; j++) {
-    const q = points[j];
-    if (q.sec > WINDOW_SEC) break;
-    const px = leg === "up" ? q.u : q.d;
-    if (px >= P_sellTarget) {
-      sellIdx = j;
-      break;
-    }
-  }
-  const legLabel = leg === "up" ? "Up" : "Down";
-  if (sellIdx >= 0) {
-    const q = points[sellIdx];
-    const P_exit = leg === "up" ? q.u : q.d;
-    const t_exit = q.sec;
-    const profit = N * (P_exit - P_entry);
-    return {
-      code: "closed",
-      netUsd: profit,
-      leg,
-      legLabel,
-      P_entry,
-      P_exit,
-      t_entry,
-      t_exit,
-    };
-  }
-  const floatLoss = P_entry * N;
-  return {
-    code: "float",
-    netUsd: -floatLoss,
-    leg,
-    legLabel,
-    P_entry,
-    t_entry,
-    floatLoss,
-  };
 }
 
 function readCalcParams() {
@@ -753,6 +774,7 @@ async function runLegPairCalculator() {
   const { P_buyLimit, t0, t1, P_sellTarget, N } = params;
 
   if (!calcFullBatch?.checked) {
+    destroyCalcBatchChart();
     const slug = getCalcMarketSlug();
     const rows = tickBuffer;
     if (!rows.length) {
@@ -765,78 +787,70 @@ async function runLegPairCalculator() {
   }
 
   if (calcSubmit) calcSubmit.disabled = true;
+  destroyCalcBatchChart();
   setCalcOutcome("neutral", "全量计算中…", "");
   try {
-    const winRes = await fetch("/api/market-windows?limit=500");
-    if (!winRes.ok) throw new Error(`market-windows ${winRes.status}`);
-    const winJ = await winRes.json();
-    const windows = Array.isArray(winJ.windows) ? winJ.windows : [];
-    if (!windows.length) {
-      setCalcOutcome("warn", "无归档市场", "");
-      return;
-    }
     const tickLimit = Math.min(
       50000,
       Math.max(60, Number(limitInput?.value) || 50000),
     );
-    let total = 0;
-    let nBuy = 0;
-    let nClosed = 0;
-    let nFloat = 0;
-    let nSkip = 0;
-    const detailLines = [];
-
-    for (const w of windows) {
-      const slug = w.slug != null ? String(w.slug) : "";
-      if (!slug) continue;
-      const timeRange = formatBatchMarketTimeRange(w, slug);
-      try {
-        const tr = await fetch(
-          `/api/ticks?slug=${encodeURIComponent(slug)}&limit=${tickLimit}`,
-        );
-        if (!tr.ok) throw new Error(String(tr.status));
-        const tj = await tr.json();
-        const ticks = Array.isArray(tj.ticks) ? tj.ticks : [];
-        const r = computeLegPnlFromRows(ticks, slug, P_buyLimit, t0, t1, P_sellTarget, N);
-        total += r.netUsd;
-        if (r.code === "no_buy" || r.code === "no_points" || r.code === "no_data") {
-          nSkip += 1;
-        } else if (r.code === "bad_entry" || r.code === "no_slug") {
-          nSkip += 1;
-        } else if (r.code === "closed") {
-          nBuy += 1;
-          nClosed += 1;
-        } else if (r.code === "float") {
-          nBuy += 1;
-          nFloat += 1;
-        }
-        const tag =
-          r.code === "closed"
-            ? "平仓"
-            : r.code === "float"
-              ? "浮亏"
-              : r.code === "no_buy"
-                ? "未买"
-                : r.code === "no_points" || r.code === "no_data"
-                  ? "无点"
-                  : r.code;
-        detailLines.push(`${slug} · ${timeRange} · ${tag} · ${fmtUsdCalc(r.netUsd)}`);
-      } catch (e) {
-        detailLines.push(
-          `${slug} · ${timeRange} · 错误 ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
+    const batchRes = await fetch("/api/calc-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        P_buyLimit,
+        t0,
+        t1,
+        P_sellTarget,
+        N,
+        windowsLimit: 500,
+        tickLimit,
+      }),
+    });
+    const batchJ = await batchRes.json().catch(() => ({}));
+    if (!batchRes.ok || batchJ.ok === false) {
+      throw new Error(
+        typeof batchJ.error === "string" ? batchJ.error : `calc-batch ${batchRes.status}`,
+      );
     }
-
+    const total = Number(batchJ.total);
+    const nBuy = Number(batchJ.nBuy) || 0;
+    const nClosed = Number(batchJ.nClosed) || 0;
+    const nFloat = Number(batchJ.nFloat) || 0;
+    const nSkip = Number(batchJ.nSkip) || 0;
+    const marketCount = Number(batchJ.marketCount) || 0;
+    const details = Array.isArray(batchJ.details) ? batchJ.details : [];
+    if (!marketCount) {
+      setCalcOutcome("warn", "无归档市场", "");
+      return;
+    }
+    const detailLines = details.map((d) => {
+      const row = d && typeof d === "object" ? /** @type {Record<string, unknown>} */ (d) : {};
+      const timeRange = row.timeRange != null ? String(row.timeRange) : "—";
+      const tag = row.tag != null ? String(row.tag) : String(row.code ?? "");
+      const nu = Number(row.netUsd);
+      const usd = Number.isFinite(nu) ? nu : 0;
+      const errS =
+        row.code === "error" && row.error != null ? ` (${String(row.error)})` : "";
+      return `${timeRange} · ${tag} · ${fmtUsdCalc(usd)}${errS}`;
+    });
     const sign = total >= 0 ? "+" : "";
+    const detailShown = detailLines.slice(0, CALC_BATCH_DETAIL_MAX_LINES);
+    const detailOverflow =
+      detailLines.length > CALC_BATCH_DETAIL_MAX_LINES
+        ? `\n… 余 ${detailLines.length - CALC_BATCH_DETAIL_MAX_LINES} 条未列出`
+        : "";
     setCalcOutcome(
       total >= 0 ? "profit" : "loss",
       `累计盈亏 ${sign}${fmtUsdCalc(total)} USD`,
-      `共 ${windows.length} 个市场 · 触发买入 ${nBuy} · 已平仓 ${nClosed} · 仅浮亏 ${nFloat} · 其余 ${nSkip}\n` +
-        detailLines.slice(0, 80).join("\n") +
-        (detailLines.length > 80 ? `\n… 余 ${detailLines.length - 80} 条` : ""),
+      `共 ${marketCount} 个市场 · 触发买入 ${nBuy} · 已平仓 ${nClosed} · 仅浮亏 ${nFloat} · 其余 ${nSkip}\n` +
+        detailShown.join("\n") +
+        detailOverflow,
     );
+    updateCalcBatchChart(details);
   } catch (e) {
+    destroyCalcBatchChart();
     setCalcOutcome("warn", "全量失败", e instanceof Error ? e.message : String(e));
   } finally {
     if (calcSubmit) calcSubmit.disabled = false;
@@ -849,6 +863,25 @@ if (calcSubmit) {
   });
 }
 
-(async () => {
+const logoutBtn = document.getElementById("logout-btn");
+logoutBtn?.addEventListener("click", async () => {
+  try {
+    await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+  } catch {
+    /* noop */
+  }
+  location.href = "/login.html";
+});
+
+async function bootstrap() {
+  const auth = await fetchAuthStatus();
+  if (auth.authEnabled && !auth.authenticated) {
+    const dest = `${location.pathname}${location.search || ""}` || "/";
+    location.href = `/login.html?next=${encodeURIComponent(dest)}`;
+    return;
+  }
+  if (logoutBtn) logoutBtn.hidden = !auth.authEnabled;
   await refreshAll();
-})();
+}
+
+void bootstrap();

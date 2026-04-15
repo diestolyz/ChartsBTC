@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 · BTC 5m 图表</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2322d3ee'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app login-app">
+      <div class="login-wrap">
+        <div class="login-card ids-panel" aria-labelledby="login-title">
+          <div class="ids-panel__head">
+            <h1 class="ids-panel__title" id="login-title">登录</h1>
+            <p class="ids-panel__desc">ChartsBTC · 仅限测试学习使用</p>
+          </div>
+          <form id="login_form" class="login-form" autocomplete="on">
+            <label class="login-label" for="login_username">手机号</label>
+            <input
+              id="login_username"
+              name="username"
+              type="tel"
+              inputmode="numeric"
+              class="login-input mono"
+              placeholder="手机号"
+              autocomplete="username"
+              required
+            />
+            <label class="login-label login-label--spaced" for="login_password">密码</label>
+            <input
+              id="login_password"
+              name="password"
+              type="password"
+              class="login-input"
+              placeholder="密码"
+              autocomplete="current-password"
+              required
+            />
+            <div class="ids-panel__actions">
+              <button type="submit" class="ids-panel__btn" id="login_submit">进入</button>
+            </div>
+            <p id="login_hint" class="ids-panel__hint" hidden></p>
+          </form>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/login.js"></script>
+  </body>
+</html>

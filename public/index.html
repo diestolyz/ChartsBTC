@@ -43,6 +43,7 @@
             <input type="number" id="limit-input" min="60" max="20000" value="400" step="60" />
           </label>
           <button type="button" class="btn" id="refresh-btn">刷新</button>
+          <button type="button" class="btn btn--ghost" id="logout-btn" hidden>退出登录</button>
         </div>
       </header>
 
@@ -96,10 +97,19 @@
           </label>
         </div>
         <p class="pair-calculator__batch-hint muted">
-          开启「计算全量」后，将按当前参数对<strong>数据库中已有归档的各 5 分钟市场</strong>逐盘拉取数据并套用同一规则，汇总<strong>累计盈亏</strong>（未触发卖出按浮亏计入 <strong>−买入价×份数</strong>；未触发买入计 0）。
+          开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐各 5 分钟市场的盘口序列并按与上相同的规则计算，汇总<strong>累计盈亏</strong>（未触发卖出按浮亏计入
+          <strong>−买入价×份数</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
         </p>
         <div id="calc-verdict" class="pair-calculator__verdict mono" aria-live="polite"></div>
         <pre class="pair-calculator__detail mono" id="calc-result"></pre>
+        <h3 class="pair-calculator__batch-chart-title">全量盈亏分布</h3>
+        <div
+          class="chart-wrap chart-wrap--batch"
+          role="img"
+          aria-label="各盘平仓与浮亏：横轴为窗口起点，纵轴为美元；未触发买入的不显示"
+        >
+          <canvas id="calc-batch-chart"></canvas>
+        </div>
       </section>
 
       <p class="footnote muted">

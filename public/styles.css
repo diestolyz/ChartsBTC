@@ -3,6 +3,8 @@
   --text: #f2f2f2;
   --muted: #8a8f98;
   --card: #141414;
+  --bg2: #101010;
+  --cyan-dim: rgba(34, 211, 238, 0.12);
   --border: rgba(255, 255, 255, 0.12);
   --cyan: #22d3ee;
   --green: #4ade80;
@@ -343,6 +345,21 @@ h1 {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  max-height: min(70vh, 36rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pair-calculator__batch-chart-title {
+  margin: 16px 0 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text, #e5e7eb);
+}
+
+.chart-wrap--batch {
+  height: min(42vh, 320px);
+  margin-top: 0;
 }
 
 .footnote {
@@ -357,4 +374,143 @@ h1 {
 
 .footnote code {
   font-size: 11px;
+}
+
+/* —— 登录页（与 Wether 同源样式） —— */
+.ids-panel {
+  margin-top: 0;
+  padding: 18px 20px 20px;
+  border-radius: 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.ids-panel__head {
+  margin-bottom: 14px;
+}
+
+.ids-panel__title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.ids-panel__desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.ids-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.ids-panel__btn {
+  cursor: pointer;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--bg);
+  background: linear-gradient(165deg, #5eead4, var(--cyan));
+  border: none;
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(34, 211, 238, 0.25);
+  transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
+}
+
+.ids-panel__btn:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.32);
+}
+
+.ids-panel__btn:active {
+  transform: scale(0.98);
+}
+
+.ids-panel__hint {
+  font-size: 12px;
+  color: var(--green);
+}
+
+.ids-panel__hint--err {
+  color: var(--red);
+}
+
+.login-app {
+  min-height: 100dvh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 48px;
+}
+
+.login-wrap {
+  width: 100%;
+  max-width: 420px;
+}
+
+.login-card {
+  margin-top: 0;
+}
+
+.login-form {
+  margin-top: 4px;
+}
+
+.login-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.login-label--spaced {
+  margin-top: 14px;
+}
+
+.login-input {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.login-input:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.login-input:focus {
+  outline: none;
+  border-color: rgba(34, 211, 238, 0.55);
+  box-shadow: 0 0 0 3px var(--cyan-dim);
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.btn--ghost:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.22);
 }

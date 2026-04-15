@@ -6,6 +6,7 @@
 import express from "express";
 import http from "http";
 import path from "path";
+import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "url";
 import mysql from "mysql2/promise";
@@ -18,6 +19,11 @@ import {
   GAMMA_BASE,
 } from "./lib/gammaRolling.mjs";
 import { createBookState } from "./lib/polymarketBook.mjs";
+import {
+  computeLegPnlFromRows,
+  formatBatchMarketTimeRange,
+  pnlDetailTag,
+} from "./public/legPairPnl.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -65,6 +71,19 @@ const DB_NAME = process.env.DB_NAME || "poly";
 const TICK_MS = Math.max(200, Number(process.env.TICK_MS) || 1000);
 const GAMMA_REFRESH_MS = Math.max(3000, Number(process.env.GAMMA_REFRESH_MS) || 10000);
 
+/** 均非空时启用整站登录（与 Wether 相同环境变量名） */
+const LOGIN_USERNAME = process.env.LOGIN_USERNAME?.trim() || "";
+const LOGIN_SECRET = process.env.LOGIN_SECRET?.trim() || "";
+const AUTH_ENABLED = Boolean(LOGIN_USERNAME && LOGIN_SECRET);
+const SESSION_TTL_MS = Math.max(
+  10 * 60 * 1000,
+  Number(process.env.CHARTS_SESSION_TTL_MS) ||
+    Number(process.env.WETHER_SESSION_TTL_MS) ||
+    7 * 24 * 60 * 60 * 1000,
+);
+const COOKIE_NAME = "chartsbtc_session";
+const COOKIE_SECURE = process.env.COOKIE_SECURE === "1";
+
 /** @type {number} */
 let timeOffsetMs = 0;
 
@@ -100,6 +119,119 @@ async function syncServerTime() {
 }
 
 const book = createBookState();
+
+/**
+ * 入库前 1 秒窗口内聚合 Polymarket 盘口采样（与 tickLoop 周期一致，默认 TICK_MS=1000）。
+ * 规则（对 Up / Down 各自独立，用该秒内**最后一次**有效 mid 判定）：
+ * - mid < 0.5 → 记入值 = 该秒内**卖一（best ask）**的**最小值**
+ * - mid > 0.5 → 记入值 = 该秒内**买一（best bid）**的**最大值**
+ * - mid === 0.5 → 记入值 = 当前最后一档 bid/ask 的算术均价（兜底）
+ * `up_bid`/`up_ask`/`down_*` 取该秒内**最后一次**快照；`up_mid`/`down_mid` 为上述记入值。
+ */
+function createEmptySecondBuffer() {
+  return {
+    /** @type {{ bids: number[]; asks: number[]; lastBid: number | null; lastAsk: number | null; lastMid: number | null }} */
+    up: { bids: [], asks: [], lastBid: null, lastAsk: null, lastMid: null },
+    /** @type {{ bids: number[]; asks: number[]; lastBid: number | null; lastAsk: number | null; lastMid: number | null }} */
+    down: { bids: [], asks: [], lastBid: null, lastAsk: null, lastMid: null },
+    sampleCount: 0,
+  };
+}
+
+let secondBuffer = createEmptySecondBuffer();
+
+function recordBookSampleFromActive() {
+  if (!active) return;
+  const odds = book.oddsFromIds(active.upId, active.downId);
+  const push = (
+    /** @type {{ bids: number[]; asks: number[]; lastBid: number | null; lastAsk: number | null; lastMid: number | null }} */ side,
+    /** @type {{ bestBid: number | null; bestAsk: number | null; mid: number | null }} */ o,
+  ) => {
+    if (o.bestBid != null && Number.isFinite(Number(o.bestBid))) {
+      const b = Number(o.bestBid);
+      side.bids.push(b);
+      side.lastBid = b;
+    }
+    if (o.bestAsk != null && Number.isFinite(Number(o.bestAsk))) {
+      const a = Number(o.bestAsk);
+      side.asks.push(a);
+      side.lastAsk = a;
+    }
+    if (o.mid != null && Number.isFinite(Number(o.mid))) {
+      side.lastMid = Number(o.mid);
+    }
+  };
+  push(secondBuffer.up, odds.up);
+  push(secondBuffer.down, odds.down);
+  secondBuffer.sampleCount += 1;
+}
+
+/**
+ * @param {{ bids: number[]; asks: number[]; lastBid: number | null; lastAsk: number | null; lastMid: number | null }} side
+ * @param {{ bestBid: number | null; bestAsk: number | null; mid: number | null }} fallback
+ */
+function finalizeSideForDb(side, fallback) {
+  const lb = side.lastBid ?? (fallback.bestBid != null ? Number(fallback.bestBid) : null);
+  const la = side.lastAsk ?? (fallback.bestAsk != null ? Number(fallback.bestAsk) : null);
+  const lm =
+    side.lastMid ?? (fallback.mid != null && Number.isFinite(Number(fallback.mid)) ? Number(fallback.mid) : null);
+
+  let midOut = null;
+  if (lm != null && Number.isFinite(lm)) {
+    if (lm < 0.5) {
+      if (side.asks.length) midOut = Math.min(...side.asks);
+      else if (fallback.bestAsk != null && Number.isFinite(Number(fallback.bestAsk))) {
+        midOut = Number(fallback.bestAsk);
+      } else midOut = lm;
+    } else if (lm > 0.5) {
+      if (side.bids.length) midOut = Math.max(...side.bids);
+      else if (fallback.bestBid != null && Number.isFinite(Number(fallback.bestBid))) {
+        midOut = Number(fallback.bestBid);
+      } else midOut = lm;
+    } else {
+      midOut =
+        lb != null && la != null && Number.isFinite(lb) && Number.isFinite(la)
+          ? (lb + la) / 2
+          : fallback.mid != null && Number.isFinite(Number(fallback.mid))
+            ? Number(fallback.mid)
+            : null;
+    }
+  } else {
+    midOut =
+      lb != null && la != null && Number.isFinite(lb) && Number.isFinite(la)
+        ? (lb + la) / 2
+        : fallback.mid != null && Number.isFinite(Number(fallback.mid))
+          ? Number(fallback.mid)
+          : null;
+  }
+
+  return { bid: lb, ask: la, mid: midOut };
+}
+
+/**
+ * @param {number} ts_ms
+ * @param {string} market_slug
+ * @param {number | null} btc_usd
+ */
+function buildAggregatedTickRow(ts_ms, market_slug, btc_usd) {
+  const odds = active ? book.oddsFromIds(active.upId, active.downId) : null;
+  const upF = odds?.up ?? { bestBid: null, bestAsk: null, mid: null };
+  const downF = odds?.down ?? { bestBid: null, bestAsk: null, mid: null };
+  const up = finalizeSideForDb(secondBuffer.up, upF);
+  const down = finalizeSideForDb(secondBuffer.down, downF);
+  secondBuffer = createEmptySecondBuffer();
+  return {
+    ts_ms,
+    market_slug,
+    up_bid: up.bid,
+    up_ask: up.ask,
+    up_mid: up.mid,
+    down_bid: down.bid,
+    down_ask: down.ask,
+    down_mid: down.mid,
+    btc_usd,
+  };
+}
 
 function parseMetadataMaybe(raw) {
   if (raw == null) return null;
@@ -186,6 +318,7 @@ function connectPolymarketWs(assetIds) {
   if (!assetIds.length) return;
 
   book.reset();
+  secondBuffer = createEmptySecondBuffer();
   const ws = new WebSocket(PM_MARKET_WSS);
   pmWs = ws;
 
@@ -220,6 +353,7 @@ function connectPolymarketWs(assetIds) {
       return;
     }
     book.ingestParsed(parsed);
+    recordBookSampleFromActive();
   });
 
   ws.on("close", () => {
@@ -353,6 +487,7 @@ async function activateMarketFromGamma() {
   active = { slug, market, upId, downId, endMs, btcOpenUsd };
   if (!same) {
     console.log(`[charts-btc] Active market: ${slug} up=${upId.slice(0, 12)}… down=${downId.slice(0, 12)}…`);
+    secondBuffer = createEmptySecondBuffer();
     connectPolymarketWs([upId, downId]);
   }
   return true;
@@ -413,11 +548,89 @@ async function insertTick(row) {
   ]);
 }
 
+function timingSafeStringEq(a, b) {
+  const x = Buffer.from(String(a), "utf8");
+  const y = Buffer.from(String(b), "utf8");
+  if (x.length !== y.length) return false;
+  return crypto.timingSafeEqual(x, y);
+}
+
+function sessionSigningKeyBuf() {
+  return crypto.createHash("sha256").update(`${LOGIN_SECRET}|chartsbtc.sid.v1`, "utf8").digest();
+}
+
+function signSessionToken() {
+  const exp = Date.now() + SESSION_TTL_MS;
+  const payloadB64 = Buffer.from(JSON.stringify({ exp }), "utf8").toString("base64url");
+  const sig = crypto.createHmac("sha256", sessionSigningKeyBuf()).update(payloadB64).digest("base64url");
+  return `${payloadB64}.${sig}`;
+}
+
+function readSessionTokenFromCookieHeader(cookieHeader) {
+  if (!cookieHeader || typeof cookieHeader !== "string") return "";
+  for (const part of cookieHeader.split(";")) {
+    const s = part.trim();
+    if (s.startsWith(`${COOKIE_NAME}=`)) {
+      return decodeURIComponent(s.slice(COOKIE_NAME.length + 1).trim());
+    }
+  }
+  return "";
+}
+
+function verifySessionToken(raw) {
+  if (!raw || typeof raw !== "string") return false;
+  const dot = raw.lastIndexOf(".");
+  if (dot <= 0) return false;
+  const payloadB64 = raw.slice(0, dot);
+  const sig = raw.slice(dot + 1);
+  const expected = crypto.createHmac("sha256", sessionSigningKeyBuf()).update(payloadB64).digest("base64url");
+  const sb = Buffer.from(sig, "utf8");
+  const eb = Buffer.from(expected, "utf8");
+  if (sb.length !== eb.length) return false;
+  if (!crypto.timingSafeEqual(sb, eb)) return false;
+  let data;
+  try {
+    data = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+  } catch {
+    return false;
+  }
+  if (typeof data.exp !== "number" || Number.isNaN(data.exp) || Date.now() > data.exp) return false;
+  return true;
+}
+
+function isAuthenticated(req) {
+  if (!AUTH_ENABLED) return true;
+  return verifySessionToken(readSessionTokenFromCookieHeader(req.headers.cookie));
+}
+
+function wantsHtml(req) {
+  const a = (req.headers.accept || "").toLowerCase();
+  if (a.includes("application/json")) return false;
+  return !a || a.includes("text/html") || a.includes("*/*");
+}
+
+function setSessionCookie(res, token) {
+  const attrs = [
+    `${COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+    "SameSite=Lax",
+  ];
+  if (COOKIE_SECURE) attrs.push("Secure");
+  res.setHeader("Set-Cookie", attrs.join("; "));
+}
+
+function clearSessionCookie(res) {
+  const attrs = [`${COOKIE_NAME}=`, "Path=/", "HttpOnly", "Max-Age=0", "SameSite=Lax"];
+  if (COOKIE_SECURE) attrs.push("Secure");
+  res.setHeader("Set-Cookie", attrs.join("; "));
+}
+
 // —— Express —— //
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
 
 function buildHealthPayload() {
   const btcUsd = lastBtcUsd;
@@ -426,6 +639,7 @@ function buildHealthPayload() {
     btcUsd != null && btcOpenUsd != null ? btcUsd - btcOpenUsd : null;
   return {
     ok: true,
+    authEnabled: AUTH_ENABLED,
     btcUsd,
     btcOpenUsd,
     btcDeltaUsd,
@@ -443,7 +657,49 @@ function buildHealthPayload() {
   };
 }
 
-app.get("/api/health", (_req, res) => {
+const api = express.Router();
+
+api.post("/auth/login", (req, res) => {
+  if (!AUTH_ENABLED) {
+    res.status(400).json({
+      error: "login_disabled",
+      hint: "未同时设置 LOGIN_USERNAME 与 LOGIN_SECRET",
+    });
+    return;
+  }
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const username = typeof body.username === "string" ? body.username.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!timingSafeStringEq(username, LOGIN_USERNAME) || !timingSafeStringEq(password, LOGIN_SECRET)) {
+    res.status(401).json({ error: "invalid_credentials" });
+    return;
+  }
+  setSessionCookie(res, signSessionToken());
+  res.json({ ok: true });
+});
+
+api.get("/auth/status", (_req, res) => {
+  res.json({
+    authEnabled: AUTH_ENABLED,
+    authenticated: !AUTH_ENABLED || isAuthenticated(_req),
+  });
+});
+
+api.post("/auth/logout", (_req, res) => {
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+api.use((req, res, next) => {
+  if (!AUTH_ENABLED) return next();
+  if (!isAuthenticated(req)) {
+    res.status(401).json({ error: "unauthorized", needLogin: true });
+    return;
+  }
+  next();
+});
+
+api.get("/health", (_req, res) => {
   res.json(buildHealthPayload());
 });
 
@@ -490,9 +746,197 @@ async function fetchTicksRows(q) {
 }
 
 /**
+ * 一次取多盘 ticks，每盘最多 `perSlugLimit` 条（按 ts_ms 升序）。需 MySQL 8+ / MariaDB 10.2+ 窗口函数。
+ * @param {string[]} slugs
+ * @param {number} perSlugLimit
+ */
+async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
+  if (!pool || !slugs.length) return [];
+  const lim = Math.min(50_000, Math.max(1, Math.floor(perSlugLimit)));
+  const placeholders = slugs.map(() => "?").join(",");
+  const [rows] = await pool.query(
+    `SELECT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
+     FROM (
+       SELECT t.ts_ms, t.market_slug, t.up_bid, t.up_ask, t.up_mid, t.down_bid, t.down_ask, t.down_mid, t.btc_usd,
+         ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn
+       FROM pm_book_ticks t
+       WHERE t.market_slug IN (${placeholders})
+     ) z
+     WHERE z.rn <= ?
+     ORDER BY z.market_slug ASC, z.ts_ms ASC`,
+    [...slugs, lim],
+  );
+  return rows;
+}
+
+/**
+ * @param {unknown[]} rows
+ * @returns {Map<string, unknown[]>}
+ */
+function groupTicksBySlug(rows) {
+  /** @type {Map<string, unknown[]>} */
+  const m = new Map();
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const slug = /** @type {{ market_slug?: string }} */ (row).market_slug;
+    if (typeof slug !== "string" || !slug) continue;
+    let arr = m.get(slug);
+    if (!arr) {
+      arr = [];
+      m.set(slug, arr);
+    }
+    arr.push(row);
+  }
+  return m;
+}
+
+/**
+ * 单侧盈亏「全量」：一次拉齐 windows + 各盘 ticks，服务端套用与前端相同的 `computeLegPnlFromRows`。
+ */
+api.post("/calc-batch", async (req, res) => {
+  if (!pool) {
+    res.status(503).json({ ok: false, error: "database_unavailable" });
+    return;
+  }
+  const b = req.body && typeof req.body === "object" ? req.body : {};
+  const P_buyLimit = Number(b.P_buyLimit);
+  let t0 = Number(b.t0);
+  let t1 = Number(b.t1);
+  const P_sellTarget = Number(b.P_sellTarget);
+  const N = Number(b.N);
+  const windowsLimit = clampWindowListLimit(b.windowsLimit ?? 500);
+  const tickLimit = clampTickLimit(b.tickLimit ?? 50_000);
+
+  if (
+    !Number.isFinite(P_buyLimit) ||
+    !Number.isFinite(t0) ||
+    !Number.isFinite(t1) ||
+    !Number.isFinite(P_sellTarget) ||
+    !Number.isFinite(N) ||
+    N <= 0
+  ) {
+    res.status(400).json({ ok: false, error: "invalid_params" });
+    return;
+  }
+  if (t0 > t1) {
+    const x = t0;
+    t0 = t1;
+    t1 = x;
+  }
+  t0 = Math.max(0, t0);
+  t1 = Math.min(300, t1);
+
+  try {
+    const [winRows] = await pool.query(
+      `SELECT market_slug AS slug,
+              MIN(ts_ms) AS min_ts_ms,
+              MAX(ts_ms) AS max_ts_ms,
+              COUNT(*) AS tick_count
+       FROM pm_book_ticks
+       GROUP BY market_slug
+       ORDER BY max_ts_ms DESC
+       LIMIT ${windowsLimit}`,
+    );
+    const windows = Array.isArray(winRows) ? winRows : [];
+    if (!windows.length) {
+      res.json({
+        ok: true,
+        total: 0,
+        nBuy: 0,
+        nClosed: 0,
+        nFloat: 0,
+        nSkip: 0,
+        marketCount: 0,
+        details: [],
+      });
+      return;
+    }
+
+    const slugs = [];
+    for (const w of windows) {
+      const slug = w && typeof w === "object" && w.slug != null ? String(w.slug) : "";
+      if (slug) slugs.push(slug);
+    }
+
+    const tickRows = await fetchTicksRowsForSlugs(slugs, tickLimit);
+    const bySlug = groupTicksBySlug(tickRows);
+
+    let total = 0;
+    let nBuy = 0;
+    let nClosed = 0;
+    let nFloat = 0;
+    let nSkip = 0;
+    /** @type {unknown[]} */
+    const details = [];
+
+    for (const w of windows) {
+      const slug = w && typeof w === "object" && w.slug != null ? String(w.slug) : "";
+      if (!slug) continue;
+      const timeRange = formatBatchMarketTimeRange(w, slug);
+      const minMs = w.min_ts_ms != null ? Number(w.min_ts_ms) : NaN;
+      const startMs = Number.isFinite(minMs) ? minMs : null;
+
+      try {
+        const ticks = bySlug.get(slug) ?? [];
+        const r = computeLegPnlFromRows(ticks, slug, P_buyLimit, t0, t1, P_sellTarget, N);
+        total += r.netUsd;
+        if (r.code === "no_buy" || r.code === "no_points" || r.code === "no_data") {
+          nSkip += 1;
+        } else if (r.code === "bad_entry" || r.code === "no_slug") {
+          nSkip += 1;
+        } else if (r.code === "closed") {
+          nBuy += 1;
+          nClosed += 1;
+        } else if (r.code === "float") {
+          nBuy += 1;
+          nFloat += 1;
+        }
+        const tag = pnlDetailTag(r.code);
+        details.push({
+          slug,
+          startMs,
+          timeRange,
+          tag,
+          netUsd: r.netUsd,
+          code: r.code,
+        });
+      } catch (e) {
+        nSkip += 1;
+        details.push({
+          slug,
+          startMs,
+          timeRange,
+          tag: "错误",
+          netUsd: 0,
+          code: "error",
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      total,
+      nBuy,
+      nClosed,
+      nFloat,
+      nSkip,
+      marketCount: windows.length,
+      details,
+    });
+  } catch (e) {
+    console.error("[charts-btc] /api/calc-batch", e);
+    res.status(500).json({
+      ok: false,
+      error: String(e instanceof Error ? e.message : e),
+    });
+  }
+});
+
+/**
  * 已入库的各 5 分钟市场（按 slug 聚合），用于前端切换归档图表。
  */
-app.get("/api/market-windows", async (req, res) => {
+api.get("/market-windows", async (req, res) => {
   if (!pool) {
     res.status(503).json({ error: "database_unavailable" });
     return;
@@ -516,7 +960,7 @@ app.get("/api/market-windows", async (req, res) => {
   }
 });
 
-app.get("/api/ticks", async (req, res) => {
+api.get("/ticks", async (req, res) => {
   if (!pool) {
     res.status(503).json({ error: "database_unavailable" });
     return;
@@ -540,10 +984,57 @@ app.get("/api/ticks", async (req, res) => {
   }
 });
 
+function staticAuthGuard(req, res, next) {
+  if (!AUTH_ENABLED) return next();
+  if (req.path.startsWith("/api")) return next();
+  const base = req.path.split("?")[0].replace(/\/$/, "") || "/";
+  const publicPaths = new Set(["/login.html", "/login.js", "/styles.css"]);
+  if (publicPaths.has(base)) return next();
+  if (!isAuthenticated(req)) {
+    if (wantsHtml(req)) {
+      const dest = base === "/" ? "/" : base;
+      res.redirect(302, `/login.html?next=${encodeURIComponent(dest)}`);
+      return;
+    }
+    res.status(401).type("text/plain").send("Unauthorized");
+    return;
+  }
+  next();
+}
+
+app.use(staticAuthGuard);
+app.use("/api", api);
+app.use(express.static(path.join(__dirname, "public")));
+
 const server = http.createServer(app);
 
 /** 浏览器图表页 /ws/chart：订阅后推送快照，实时盘在每次入库后再推送一条。 */
-const wssChart = new WebSocketServer({ server, path: "/ws/chart" });
+const wssChart = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (request, socket, head) => {
+  let pathname = "/";
+  try {
+    pathname = new URL(request.url || "/", "http://localhost").pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+  if (pathname === "/ws/chart") {
+    if (AUTH_ENABLED) {
+      const tok = readSessionTokenFromCookieHeader(request.headers.cookie || "");
+      if (!verifySessionToken(tok)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    }
+    wssChart.handleUpgrade(request, socket, head, (ws) => {
+      wssChart.emit("connection", ws, request);
+    });
+    return;
+  }
+  socket.destroy();
+});
 
 /**
  * @param {import("ws").WebSocket} ws
@@ -661,19 +1152,8 @@ async function tickLoop() {
 
   if (!active) return;
 
-  const odds = book.oddsFromIds(active.upId, active.downId);
   const ts = Date.now();
-  const row = {
-    ts_ms: ts,
-    market_slug: active.slug,
-    up_bid: odds.up.bestBid,
-    up_ask: odds.up.bestAsk,
-    up_mid: odds.up.mid,
-    down_bid: odds.down.bestBid,
-    down_ask: odds.down.bestAsk,
-    down_mid: odds.down.mid,
-    btc_usd: lastBtcUsd,
-  };
+  const row = buildAggregatedTickRow(ts, active.slug, lastBtcUsd);
 
   try {
     await insertTick(row);
@@ -704,6 +1184,11 @@ async function main() {
   server.listen(PORT, () => {
     console.log(
       `[charts-btc] http://127.0.0.1:${PORT}/  ·  WSS /ws/chart  ·  MySQL ${DB_HOST}/${DB_NAME}  ·  tick ${TICK_MS}ms`,
+    );
+    console.log(
+      AUTH_ENABLED
+        ? "[charts-btc] Login: 已启用（.env 中 LOGIN_USERNAME + LOGIN_SECRET；未登录将跳转 /login.html）"
+        : "[charts-btc] Login: 未启用（同时设置 LOGIN_USERNAME 与 LOGIN_SECRET 后重启以开启）",
     );
     tickLoop().catch((e) => console.error("[charts-btc] first tick", e));
   });
