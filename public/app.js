@@ -540,6 +540,19 @@ const calcResult = document.getElementById("calc-result");
 const calcVerdict = document.getElementById("calc-verdict");
 const calcFullBatch = document.getElementById("calc-full-batch");
 const calcBatchCanvas = document.getElementById("calc-batch-chart");
+const calcBatchSummary = document.getElementById("calc-batch-summary");
+
+function setCalcBatchSummary(text) {
+  if (!calcBatchSummary) return;
+  const t = text != null ? String(text).trim() : "";
+  if (!t) {
+    calcBatchSummary.textContent = "";
+    calcBatchSummary.hidden = true;
+    return;
+  }
+  calcBatchSummary.textContent = t;
+  calcBatchSummary.hidden = false;
+}
 
 /** @type {any} */
 let calcBatchChart = null;
@@ -775,6 +788,7 @@ async function runLegPairCalculator() {
 
   if (!calcFullBatch?.checked) {
     destroyCalcBatchChart();
+    setCalcBatchSummary("");
     const slug = getCalcMarketSlug();
     const rows = tickBuffer;
     if (!rows.length) {
@@ -788,6 +802,7 @@ async function runLegPairCalculator() {
 
   if (calcSubmit) calcSubmit.disabled = true;
   destroyCalcBatchChart();
+  setCalcBatchSummary("");
   setCalcOutcome("neutral", "全量计算中…", "");
   try {
     const tickLimit = Math.min(
@@ -822,6 +837,7 @@ async function runLegPairCalculator() {
     const marketCount = Number(batchJ.marketCount) || 0;
     const details = Array.isArray(batchJ.details) ? batchJ.details : [];
     if (!marketCount) {
+      setCalcBatchSummary("");
       setCalcOutcome("warn", "无归档市场", "");
       return;
     }
@@ -841,16 +857,17 @@ async function runLegPairCalculator() {
       detailLines.length > CALC_BATCH_DETAIL_MAX_LINES
         ? `\n… 余 ${detailLines.length - CALC_BATCH_DETAIL_MAX_LINES} 条未列出`
         : "";
+    const summaryLine = `共 ${marketCount} 个市场 · 触发买入 ${nBuy} · 已平仓 ${nClosed} · 仅浮亏 ${nFloat} · 其余 ${nSkip}`;
+    setCalcBatchSummary(summaryLine);
     setCalcOutcome(
       total >= 0 ? "profit" : "loss",
       `累计盈亏 ${sign}${fmtUsdCalc(total)} USD`,
-      `共 ${marketCount} 个市场 · 触发买入 ${nBuy} · 已平仓 ${nClosed} · 仅浮亏 ${nFloat} · 其余 ${nSkip}\n` +
-        detailShown.join("\n") +
-        detailOverflow,
+      detailShown.join("\n") + detailOverflow,
     );
     updateCalcBatchChart(details);
   } catch (e) {
     destroyCalcBatchChart();
+    setCalcBatchSummary("");
     setCalcOutcome("warn", "全量失败", e instanceof Error ? e.message : String(e));
   } finally {
     if (calcSubmit) calcSubmit.disabled = false;

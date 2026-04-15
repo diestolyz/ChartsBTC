@@ -362,6 +362,19 @@ h1 {
   margin-top: 0;
 }
 
+.pair-calculator__batch-summary {
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: center;
+}
+
+.pair-calculator__batch-summary:not([hidden]) {
+  display: block;
+}
+
 .footnote {
   margin-top: 20px;
   font-size: 12px;
