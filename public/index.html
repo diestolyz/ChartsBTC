@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BTC 5m 盘口 · 时序图</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2322d3ee'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div class="app">
+      <header class="head">
+        <div>
+          <h1>BTC 5 分钟 Up/Down · 分盘归档</h1>
+          <p class="sub">当前服务盘 <span id="slug-label" class="mono">—</span></p>
+        </div>
+        <div class="head-actions">
+          <label class="field field--market">
+            时间段（每 5 分钟一盘）
+            <div class="market-switcher">
+              <button type="button" class="btn btn--icon" id="market-prev" aria-label="上一时段" title="上一时段">
+                ‹
+              </button>
+              <select id="market-select" aria-label="切换 5 分钟市场">
+                <option value="">当前盘（跟随实时）</option>
+              </select>
+              <button type="button" class="btn btn--icon" id="market-next" aria-label="下一时段" title="下一时段">
+                ›
+              </button>
+            </div>
+          </label>
+          <label class="field">
+            时间跨度（s）
+            <input type="number" id="limit-input" min="60" max="20000" value="400" step="60" />
+          </label>
+          <button type="button" class="btn" id="refresh-btn">刷新</button>
+        </div>
+      </header>
+
+      <section class="status-bar" aria-live="polite">
+        <span>Up mid <strong id="live-up" class="mono">—</strong></span>
+        <span>Down mid <strong id="live-down" class="mono">—</strong></span>
+        <span>Chainlink 差价 <strong id="live-btc" class="mono" title="现价 − 开盘参考价">—</strong></span>
+        <span class="muted" id="conn-label">—</span>
+      </section>
+
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+      </div>
+
+      <section class="pair-calculator" id="pair-calculator" aria-labelledby="pair-calculator-title">
+        <h2 id="pair-calculator-title" class="pair-calculator__title">单侧盈亏测算</h2>
+        <p class="pair-calculator__hint muted">
+          在<strong>[起始,结束]</strong> 秒内按时间找<strong>首次</strong>触发：<strong>若 Up mid ≤ 买入限价</strong>则视为买
+          <strong>Up</strong>（若同一时刻 Down 也满足，仍优先按 <strong>Up</strong>）；否则若 <strong>Down mid ≤ 买入限价</strong>则买
+          <strong>Down</strong>。成交后仅从该时刻起用<strong>同一侧 mid</strong>在整盘 0～300s 内找是否 ≥
+          <strong>卖出价格</strong>。<strong>盈利 = (该侧卖出 mid − 该侧买入 mid) × 份数</strong>；未触发卖出则<strong>浮亏 = 该侧买入 mid × 份数</strong>。不计手续费与滑点。
+        </p>
+        <div class="pair-calculator__fields">
+          <label class="field">
+            买入限价（该侧 mid ≤ 此值才可能触发买入）
+            <input type="number" id="calc-pair-price" min="0" max="1" step="0.01" value="0.37" />
+          </label>
+          <label class="field">
+            买入时机 · 起始（距开盘秒）
+            <input type="number" id="calc-t0" min="0" max="300" step="1" value="0" />
+          </label>
+          <label class="field">
+            买入时机 · 结束（距开盘秒）
+            <input type="number" id="calc-t1" min="0" max="300" step="1" value="60" />
+          </label>
+          <label class="field">
+            卖出价格（已买入那一侧 mid ≥ 此价即触发卖出）
+            <input type="number" id="calc-sell-price" min="0" max="1" step="0.01" value="0.67" />
+          </label>
+          <label class="field">
+            买入份数 N（对应触发的那一腿）
+            <input type="number" id="calc-shares" min="1" max="1000000" step="1" value="10" />
+          </label>
+        </div>
+        <div class="pair-calculator__actions">
+          <button type="button" class="btn" id="calc-submit">确认计算</button>
+          <label class="calc-full-batch">
+            <input type="checkbox" id="calc-full-batch" role="switch" aria-label="计算全量" />
+            <span class="calc-full-batch__ui" aria-hidden="true"></span>
+            <span class="calc-full-batch__label">计算全量</span>
+          </label>
+        </div>
+        <p class="pair-calculator__batch-hint muted">
+          开启「计算全量」后，将按当前参数对<strong>数据库中已有归档的各 5 分钟市场</strong>逐盘拉取数据并套用同一规则，汇总<strong>累计盈亏</strong>（未触发卖出按浮亏计入 <strong>−买入价×份数</strong>；未触发买入计 0）。
+        </p>
+        <div id="calc-verdict" class="pair-calculator__verdict mono" aria-live="polite"></div>
+        <pre class="pair-calculator__detail mono" id="calc-result"></pre>
+      </section>
+
+      <p class="footnote muted">
+        与
+        <a href="https://polymarket.com/event/btc-updown-5m" target="_blank" rel="noopener noreferrer"
+          >Polymarket BTC 5m</a
+        >
+        规则一致
+      </p>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "charts-btc-polymarket",
+  "version": "1.0.0",
+  "description": "Record Polymarket BTC 5m Up/Down book + Chainlink BTC into MySQL; chart in browser",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20.10"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "mysql2": "^3.11.5",
+    "ws": "^8.20.0"
+  }
+}
