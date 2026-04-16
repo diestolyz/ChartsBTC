@@ -30,7 +30,11 @@
               <button type="button" class="btn btn--icon" id="market-prev" aria-label="上一时段" title="上一时段">
                 ‹
               </button>
-              <select id="market-select" aria-label="切换 5 分钟市场">
+              <select
+                id="market-select"
+                aria-label="切换 5 分钟市场（最多 400 个归档）"
+                title="下拉列表最多显示 400 个已入库市场"
+              >
                 <option value="">当前盘（跟随实时）</option>
               </select>
               <button type="button" class="btn btn--icon" id="market-next" aria-label="下一时段" title="下一时段">
@@ -61,12 +65,34 @@
       <section class="pair-calculator" id="pair-calculator" aria-labelledby="pair-calculator-title">
         <h2 id="pair-calculator-title" class="pair-calculator__title">单侧盈亏测算</h2>
         <p class="pair-calculator__hint muted">
-          在<strong>[起始,结束]</strong> 秒内按时间找<strong>首次</strong>触发：<strong>若 Up mid ≤ 买入限价</strong>则视为买
+          <strong>起始 / 结束</strong>均为<strong>距本盘开盘</strong>的秒数（与 slug 窗口起点对齐）。例如起始 50、结束 70 → 只看开盘后
+          <strong>50s～70s</strong> 内是否满足<strong>买入限价</strong>；起始 0、结束 70 → 开盘后 <strong>0s～70s</strong>。在<strong>[起始,结束]</strong>
+          秒内按时间找<strong>首次</strong>触发：<strong>若 Up mid ≤ 买入限价</strong>则视为买
           <strong>Up</strong>（若同一时刻 Down 也满足，仍优先按 <strong>Up</strong>）；否则若 <strong>Down mid ≤ 买入限价</strong>则买
           <strong>Down</strong>。成交后仅从该时刻起用<strong>同一侧 mid</strong>在整盘 0～300s 内找是否 ≥
           <strong>卖出价格</strong>。<strong>盈亏金额一律按下方填写的买入限价、卖出价格与份数</strong>计算：<strong>已平仓 =
           (卖出价格 − 买入限价) × 份数</strong>；未触发卖出则<strong>浮亏 = 买入限价 × 份数</strong>。不计手续费与滑点。
         </p>
+        <div class="pair-calculator__preset-pick">
+          <label class="field field--preset-filter">
+            筛选方案
+            <input
+              type="search"
+              id="calc-preset-filter"
+              placeholder="名称关键字"
+              autocomplete="off"
+              enterkeyhint="search"
+            />
+          </label>
+          <label class="field field--preset-select">
+            已存方案
+            <select id="calc-preset-select" aria-label="切换已保存的测算参数">
+              <option value="">— 选择方案 —</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn--ghost" id="calc-preset-delete">删除所选方案</button>
+        </div>
+
         <div class="pair-calculator__fields">
           <label class="field">
             买入限价（该侧 mid ≤ 此值才可能触发买入）
@@ -88,6 +114,16 @@
             买入份数 N（对应触发的那一腿）
             <input type="number" id="calc-shares" min="1" max="1000000" step="1" value="10" />
           </label>
+        </div>
+        <div class="pair-calculator__presets">
+          <label class="field">
+            方案名称（保存）
+            <input type="text" id="calc-preset-name" placeholder="同名将覆盖" maxlength="80" />
+          </label>
+          <div class="pair-calculator__presets-actions">
+            <button type="button" class="btn" id="calc-preset-save">保存当前参数</button>
+          </div>
+          <p id="calc-preset-msg" class="pair-calculator__preset-msg muted" aria-live="polite"></p>
         </div>
         <div class="pair-calculator__actions">
           <button type="button" class="btn" id="calc-submit">确认计算</button>

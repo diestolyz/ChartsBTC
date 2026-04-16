@@ -47,6 +47,8 @@ let chartStatusLine = "";
 const ROLLOVER_NEAR_END_MS = 5000;
 /** 临近结束后延迟多久执行 loadMarketWindows + 重订阅 */
 const ROLLOVER_REFRESH_AFTER_MS = 8000;
+/** 下拉「时间段」列表最多展示的归档市场数（与 /api/market-windows 的 limit 一致） */
+const MARKET_SELECT_LIMIT = 400;
 
 /** 当前盘结束前临近窗口内触发，排程一次换盘刷新 */
 let rolloverRefreshTimer = null;
@@ -450,7 +452,9 @@ async function loadMarketWindows() {
   if (!marketSelect) return;
   const prev = chartSlugOverride ?? "";
   try {
-    const res = await fetch("/api/market-windows?limit=96", { credentials: "same-origin" });
+    const res = await fetch(`/api/market-windows?limit=${MARKET_SELECT_LIMIT}`, {
+      credentials: "same-origin",
+    });
     const j = await res.json();
     const windows = Array.isArray(j.windows) ? j.windows : [];
     marketSelect.innerHTML = "";
@@ -541,6 +545,12 @@ const calcVerdict = document.getElementById("calc-verdict");
 const calcFullBatch = document.getElementById("calc-full-batch");
 const calcBatchCanvas = document.getElementById("calc-batch-chart");
 const calcBatchSummary = document.getElementById("calc-batch-summary");
+const calcPresetFilter = document.getElementById("calc-preset-filter");
+const calcPresetSelect = document.getElementById("calc-preset-select");
+const calcPresetName = document.getElementById("calc-preset-name");
+const calcPresetSave = document.getElementById("calc-preset-save");
+const calcPresetDelete = document.getElementById("calc-preset-delete");
+const calcPresetMsg = document.getElementById("calc-preset-msg");
 
 function setCalcBatchSummary(text) {
   if (!calcBatchSummary) return;
@@ -731,6 +741,218 @@ function readCalcParams() {
   return { P_buyLimit, t0, t1, P_sellTarget, N };
 }
 
+/** @type {{ id: string; name: string; updatedAt: string; params: Record<string, unknown> }[]} */
+let calcPresetsCache = [];
+let calcPresetSelectSilent = false;
+
+/**
+ * @param {string} text
+ * @param {"neutral" | "warn" | "ok"} kind
+ */
+function setCalcPresetMsg(text, kind = "neutral") {
+  if (!calcPresetMsg) return;
+  calcPresetMsg.textContent = text || "";
+  const extra =
+    kind === "warn"
+      ? " pair-calculator__preset-msg--warn"
+      : kind === "ok"
+        ? " pair-calculator__preset-msg--ok"
+        : "";
+  calcPresetMsg.className = `pair-calculator__preset-msg muted${extra}`;
+}
+
+function collectCalcParamsForSave() {
+  const p = readCalcParams();
+  if (!p) return null;
+  return { ...p, fullBatch: Boolean(calcFullBatch?.checked) };
+}
+
+/**
+ * @param {unknown} params
+ */
+function applyCalcPresetParams(params) {
+  if (!params || typeof params !== "object") return;
+  const p = /** @type {Record<string, unknown>} */ (params);
+  if (calcPairPrice && p.P_buyLimit != null) calcPairPrice.value = String(p.P_buyLimit);
+  if (calcT0 && p.t0 != null) calcT0.value = String(p.t0);
+  if (calcT1 && p.t1 != null) calcT1.value = String(p.t1);
+  if (calcSellPrice && p.P_sellTarget != null) calcSellPrice.value = String(p.P_sellTarget);
+  if (calcShares && p.N != null) calcShares.value = String(p.N);
+  if (calcFullBatch) {
+    calcFullBatch.checked =
+      p.fullBatch === true || p.fullBatch === 1 || p.fullBatch === "1" || p.fullBatch === "true";
+  }
+}
+
+/**
+ * @param {string} [filterRaw]
+ */
+function rebuildCalcPresetOptions(filterRaw) {
+  if (!calcPresetSelect) return;
+  const q = (filterRaw != null ? String(filterRaw) : "").trim().toLowerCase();
+  const prev = calcPresetSelect.value;
+  calcPresetSelectSilent = true;
+  calcPresetSelect.innerHTML = "";
+  const o0 = document.createElement("option");
+  o0.value = "";
+  o0.textContent = "— 选择方案 —";
+  calcPresetSelect.appendChild(o0);
+  const list = q.length
+    ? calcPresetsCache.filter((x) => x.name.toLowerCase().includes(q))
+    : calcPresetsCache;
+  for (const pr of list) {
+    const o = document.createElement("option");
+    o.value = pr.id;
+    const sub = pr.updatedAt ? ` · ${pr.updatedAt.slice(0, 10)}` : "";
+    o.textContent = `${pr.name}${sub}`;
+    const pp = pr.params;
+    const pb = pp.P_buyLimit != null ? String(pp.P_buyLimit) : "—";
+    const t0s = pp.t0 != null ? String(pp.t0) : "—";
+    const t1s = pp.t1 != null ? String(pp.t1) : "—";
+    o.title = `${pr.name} — 买入限价 ${pb} · [${t0s},${t1s}]s`;
+    calcPresetSelect.appendChild(o);
+  }
+  const still = prev && [...calcPresetSelect.options].some((opt) => opt.value === prev);
+  calcPresetSelect.value = still ? prev : "";
+  calcPresetSelectSilent = false;
+}
+
+async function fetchCalcPresets() {
+  const res = await fetch("/api/calc-presets", {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.ok === false) {
+    throw new Error(typeof j.error === "string" ? j.error : `calc-presets ${res.status}`);
+  }
+  const presets = Array.isArray(j.presets) ? j.presets : [];
+  calcPresetsCache = presets
+    .filter((x) => x && typeof x === "object" && typeof /** @type {{ id?: unknown }} */ (x).id === "string")
+    .map((x) => {
+      const o = /** @type {{ id: string; name?: unknown; updatedAt?: unknown; params?: unknown }} */ (x);
+      return {
+        id: o.id,
+        name: typeof o.name === "string" ? o.name : "",
+        updatedAt: typeof o.updatedAt === "string" ? o.updatedAt : "",
+        params: o.params && typeof o.params === "object" ? /** @type {Record<string, unknown>} */ (o.params) : {},
+      };
+    })
+    .filter((x) => x.name.length > 0);
+  rebuildCalcPresetOptions(calcPresetFilter?.value ?? "");
+}
+
+async function saveCalcPreset() {
+  const params = collectCalcParamsForSave();
+  if (!params) {
+    setCalcPresetMsg("请补全测算参数后再保存", "warn");
+    return;
+  }
+  const name = (calcPresetName?.value ?? "").trim();
+  if (!name) {
+    setCalcPresetMsg("请填写方案名称", "warn");
+    return;
+  }
+  if (calcPresetSave) calcPresetSave.disabled = true;
+  setCalcPresetMsg("保存中…", "neutral");
+  try {
+    const res = await fetch("/api/calc-presets", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ name, params }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) {
+      const err = typeof j.error === "string" ? j.error : `HTTP ${res.status}`;
+      if (err === "too_many_presets") {
+        throw new Error("已达保存上限（200 条），请先删除旧方案");
+      }
+      throw new Error(err);
+    }
+    await fetchCalcPresets();
+    const preset = j.preset && typeof j.preset === "object" ? j.preset : null;
+    const id =
+      preset && "id" in preset && typeof /** @type {{ id?: unknown }} */ (preset).id === "string"
+        ? /** @type {{ id: string }} */ (preset).id
+        : null;
+    if (id && calcPresetSelect) {
+      calcPresetSelectSilent = true;
+      calcPresetSelect.value = id;
+      calcPresetSelectSilent = false;
+    }
+    setCalcPresetMsg("已保存", "ok");
+  } catch (e) {
+    setCalcPresetMsg(e instanceof Error ? e.message : String(e), "warn");
+  } finally {
+    if (calcPresetSave) calcPresetSave.disabled = false;
+  }
+}
+
+async function deleteCalcPreset() {
+  const id = calcPresetSelect?.value ?? "";
+  if (!id) {
+    setCalcPresetMsg("请先在下拉框中选择要删除的方案", "warn");
+    return;
+  }
+  if (calcPresetDelete) calcPresetDelete.disabled = true;
+  setCalcPresetMsg("删除中…", "neutral");
+  try {
+    const res = await fetch(`/api/calc-presets/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) {
+      throw new Error(typeof j.error === "string" ? j.error : `HTTP ${res.status}`);
+    }
+    await fetchCalcPresets();
+    if (calcPresetName) calcPresetName.value = "";
+    setCalcPresetMsg("已删除", "ok");
+  } catch (e) {
+    setCalcPresetMsg(e instanceof Error ? e.message : String(e), "warn");
+  } finally {
+    if (calcPresetDelete) calcPresetDelete.disabled = false;
+  }
+}
+
+function onCalcPresetSelectChange() {
+  if (calcPresetSelectSilent || !calcPresetSelect) return;
+  const selId = calcPresetSelect.value;
+  if (!selId) {
+    setCalcPresetMsg("", "neutral");
+    return;
+  }
+  const pr = calcPresetsCache.find((x) => x.id === selId);
+  if (!pr) {
+    setCalcPresetMsg("未找到该方案", "warn");
+    return;
+  }
+  applyCalcPresetParams(pr.params);
+  if (calcPresetName) calcPresetName.value = pr.name;
+  setCalcPresetMsg(`已加载「${pr.name}」`, "ok");
+}
+
+if (calcPresetFilter) {
+  calcPresetFilter.addEventListener("input", () => {
+    rebuildCalcPresetOptions(calcPresetFilter.value);
+  });
+}
+if (calcPresetSelect) {
+  calcPresetSelect.addEventListener("change", onCalcPresetSelectChange);
+}
+if (calcPresetSave) {
+  calcPresetSave.addEventListener("click", () => {
+    void saveCalcPreset();
+  });
+}
+if (calcPresetDelete) {
+  calcPresetDelete.addEventListener("click", () => {
+    void deleteCalcPreset();
+  });
+}
+
 /**
  * @param {ReturnType<typeof computeLegPnlFromRows>} r
  * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number }} params
@@ -899,6 +1121,11 @@ async function bootstrap() {
   }
   if (logoutBtn) logoutBtn.hidden = !auth.authEnabled;
   await refreshAll();
+  try {
+    await fetchCalcPresets();
+  } catch (e) {
+    setCalcPresetMsg(e instanceof Error ? e.message : String(e), "warn");
+  }
 }
 
 void bootstrap();

@@ -226,6 +226,55 @@ h1 {
   width: min(160px, 100%);
 }
 
+.pair-calculator__preset-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+
+.pair-calculator__preset-pick .field--preset-filter input {
+  width: min(180px, 100%);
+}
+
+.pair-calculator__preset-pick .field--preset-select select {
+  min-width: 200px;
+  max-width: min(380px, 100%);
+}
+
+.pair-calculator__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pair-calculator__presets-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.pair-calculator__preset-msg {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12px;
+  min-height: 1.25em;
+}
+
+.pair-calculator__preset-msg--warn {
+  color: var(--amber);
+}
+
+.pair-calculator__preset-msg--ok {
+  color: var(--green);
+}
+
 .pair-calculator__actions {
   display: flex;
   flex-wrap: wrap;

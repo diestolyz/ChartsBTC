@@ -8,6 +8,7 @@ import http from "http";
 import path from "path";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "url";
 import mysql from "mysql2/promise";
 import WebSocket, { WebSocketServer } from "ws";
@@ -22,10 +23,16 @@ import { createBookState } from "./lib/polymarketBook.mjs";
 import {
   computeLegPnlFromRows,
   formatBatchMarketTimeRange,
+  num,
   pnlDetailTag,
+  WINDOW_SEC,
 } from "./public/legPairPnl.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const CALC_PRESETS_PATH = path.join(__dirname, "data", "calc-presets.json");
+const CALC_PRESETS_MAX = 200;
+const CALC_PRESET_NAME_MAX = 80;
 
 /** 读取项目根目录 `.env`（不覆盖已在 shell 里设置的变量） */
 function loadDotEnvFromFile() {
@@ -957,6 +964,166 @@ api.get("/market-windows", async (req, res) => {
   } catch (e) {
     console.error("[charts-btc] /api/market-windows", e);
     res.status(500).json({ error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
+/**
+ * @param {unknown} raw
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean } | null}
+ */
+function normalizeCalcPresetParams(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  const P_buyLimit = num(o.P_buyLimit);
+  let t0 = num(o.t0);
+  let t1 = num(o.t1);
+  const P_sellTarget = num(o.P_sellTarget);
+  const N = num(o.N);
+  const fullBatch = Boolean(
+    o.fullBatch === true || o.fullBatch === 1 || o.fullBatch === "1" || o.fullBatch === "true",
+  );
+  if (P_buyLimit == null || t0 == null || t1 == null || P_sellTarget == null || N == null) {
+    return null;
+  }
+  if (N <= 0) return null;
+  if (t0 > t1) {
+    const x = t0;
+    t0 = t1;
+    t1 = x;
+  }
+  t0 = Math.max(0, t0);
+  t1 = Math.min(WINDOW_SEC, t1);
+  return { P_buyLimit, t0, t1, P_sellTarget, N, fullBatch };
+}
+
+async function readCalcPresetsDoc() {
+  try {
+    const raw = await readFile(CALC_PRESETS_PATH, "utf8");
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== "object" || !Array.isArray(j.presets)) {
+      return { version: 1, presets: [] };
+    }
+    return j;
+  } catch (e) {
+    const err = /** @type {NodeJS.ErrnoException} */ (e);
+    if (err.code === "ENOENT") {
+      return { version: 1, presets: [] };
+    }
+    throw e;
+  }
+}
+
+/**
+ * @param {{ version?: number; presets: unknown[] }} doc
+ */
+async function atomicWriteCalcPresets(doc) {
+  const dir = path.dirname(CALC_PRESETS_PATH);
+  await mkdir(dir, { recursive: true });
+  const tmp = `${CALC_PRESETS_PATH}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
+  await rename(tmp, CALC_PRESETS_PATH);
+}
+
+/** 单侧测算参数预设（存 data/calc-presets.json） */
+api.get("/calc-presets", async (_req, res) => {
+  try {
+    const doc = await readCalcPresetsDoc();
+    const presets = Array.isArray(doc.presets) ? doc.presets : [];
+    const sorted = [...presets].sort((a, b) => {
+      const ta =
+        a && typeof a === "object" && typeof /** @type {{ updatedAt?: string }} */ (a).updatedAt === "string"
+          ? Date.parse(/** @type {{ updatedAt: string }} */ (a).updatedAt)
+          : 0;
+      const tb =
+        b && typeof b === "object" && typeof /** @type {{ updatedAt?: string }} */ (b).updatedAt === "string"
+          ? Date.parse(/** @type {{ updatedAt: string }} */ (b).updatedAt)
+          : 0;
+      return tb - ta;
+    });
+    res.json({ ok: true, presets: sorted });
+  } catch (e) {
+    console.error("[charts-btc] /api/calc-presets GET", e);
+    res.status(500).json({ ok: false, error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
+api.post("/calc-presets", async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const nameRaw = typeof body.name === "string" ? body.name.trim() : "";
+    if (!nameRaw.length || nameRaw.length > CALC_PRESET_NAME_MAX) {
+      res.status(400).json({ ok: false, error: "invalid_name" });
+      return;
+    }
+    const params = normalizeCalcPresetParams(body.params);
+    if (!params) {
+      res.status(400).json({ ok: false, error: "invalid_params" });
+      return;
+    }
+    const doc = await readCalcPresetsDoc();
+    const presets = Array.isArray(doc.presets) ? [...doc.presets] : [];
+    const now = new Date().toISOString();
+    const idx = presets.findIndex(
+      (p) => p && typeof p === "object" && String(/** @type {{ name?: string }} */ (p).name) === nameRaw,
+    );
+    if (idx >= 0) {
+      const prev = presets[idx];
+      const prevId =
+        prev && typeof prev === "object" && typeof /** @type {{ id?: string }} */ (prev).id === "string"
+          ? /** @type {{ id: string }} */ (prev).id
+          : "";
+      presets[idx] = {
+        id: prevId || crypto.randomUUID(),
+        name: nameRaw,
+        params,
+        updatedAt: now,
+      };
+    } else {
+      if (presets.length >= CALC_PRESETS_MAX) {
+        res.status(400).json({ ok: false, error: "too_many_presets" });
+        return;
+      }
+      presets.push({
+        id: crypto.randomUUID(),
+        name: nameRaw,
+        params,
+        updatedAt: now,
+      });
+    }
+    doc.version = 1;
+    doc.presets = presets;
+    await atomicWriteCalcPresets(doc);
+    const saved = presets.find(
+      (p) => p && typeof p === "object" && String(/** @type {{ name?: string }} */ (p).name) === nameRaw,
+    );
+    res.json({ ok: true, preset: saved });
+  } catch (e) {
+    console.error("[charts-btc] /api/calc-presets POST", e);
+    res.status(500).json({ ok: false, error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
+api.delete("/calc-presets/:id", async (req, res) => {
+  try {
+    const id = typeof req.params.id === "string" ? req.params.id.trim() : "";
+    if (!id) {
+      res.status(400).json({ ok: false, error: "invalid_id" });
+      return;
+    }
+    const doc = await readCalcPresetsDoc();
+    const presets = Array.isArray(doc.presets) ? doc.presets : [];
+    const next = presets.filter(
+      (p) => !(p && typeof p === "object" && /** @type {{ id?: string }} */ (p).id === id),
+    );
+    if (next.length === presets.length) {
+      res.status(404).json({ ok: false, error: "not_found" });
+      return;
+    }
+    doc.presets = next;
+    await atomicWriteCalcPresets(doc);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[charts-btc] /api/calc-presets DELETE", e);
+    res.status(500).json({ ok: false, error: String(e instanceof Error ? e.message : e) });
   }
 });
 
