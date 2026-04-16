@@ -37,7 +37,7 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
 /**
  * @param {unknown[]} rows
  * @param {string | null} slug
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number }}
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number }} P_entry/P_exit 为表单中的买入限价与卖出价（用于盈亏），非触发时刻 mid。
  */
 export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N) {
   if (!slug || typeof slug !== "string") {
@@ -69,9 +69,9 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const pBuy = points[buyIdx];
   const legUp = pBuy.u <= P_buyLimit;
   const leg = legUp ? "up" : "down";
-  const P_entry = leg === "up" ? pBuy.u : pBuy.d;
   const t_entry = pBuy.sec;
-  if (P_entry <= 0) {
+  /** 盈亏按设置的买入限价 / 卖出目标价与份数，不用触发时刻的 mid。 */
+  if (P_buyLimit <= 0) {
     return { code: "bad_entry", netUsd: 0 };
   }
   let sellIdx = -1;
@@ -87,27 +87,26 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const legLabel = leg === "up" ? "Up" : "Down";
   if (sellIdx >= 0) {
     const q = points[sellIdx];
-    const P_exit = leg === "up" ? q.u : q.d;
     const t_exit = q.sec;
-    const profit = N * (P_exit - P_entry);
+    const profit = N * (P_sellTarget - P_buyLimit);
     return {
       code: "closed",
       netUsd: profit,
       leg,
       legLabel,
-      P_entry,
-      P_exit,
+      P_entry: P_buyLimit,
+      P_exit: P_sellTarget,
       t_entry,
       t_exit,
     };
   }
-  const floatLoss = P_entry * N;
+  const floatLoss = P_buyLimit * N;
   return {
     code: "float",
     netUsd: -floatLoss,
     leg,
     legLabel,
-    P_entry,
+    P_entry: P_buyLimit,
     t_entry,
     floatLoss,
   };

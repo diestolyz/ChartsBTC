@@ -64,7 +64,8 @@
           在<strong>[起始,结束]</strong> 秒内按时间找<strong>首次</strong>触发：<strong>若 Up mid ≤ 买入限价</strong>则视为买
           <strong>Up</strong>（若同一时刻 Down 也满足，仍优先按 <strong>Up</strong>）；否则若 <strong>Down mid ≤ 买入限价</strong>则买
           <strong>Down</strong>。成交后仅从该时刻起用<strong>同一侧 mid</strong>在整盘 0～300s 内找是否 ≥
-          <strong>卖出价格</strong>。<strong>盈利 = (该侧卖出 mid − 该侧买入 mid) × 份数</strong>；未触发卖出则<strong>浮亏 = 该侧买入 mid × 份数</strong>。不计手续费与滑点。
+          <strong>卖出价格</strong>。<strong>盈亏金额一律按下方填写的买入限价、卖出价格与份数</strong>计算：<strong>已平仓 =
+          (卖出价格 − 买入限价) × 份数</strong>；未触发卖出则<strong>浮亏 = 买入限价 × 份数</strong>。不计手续费与滑点。
         </p>
         <div class="pair-calculator__fields">
           <label class="field">
@@ -97,8 +98,8 @@
           </label>
         </div>
         <p class="pair-calculator__batch-hint muted">
-          开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐各 5 分钟市场的盘口序列并按与上相同的规则计算，汇总<strong>累计盈亏</strong>（未触发卖出按浮亏计入
-          <strong>−买入价×份数</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
+          开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐各 5 分钟市场的盘口序列，<strong>触发时机</strong>仍用 mid 与上相同，<strong>盈亏金额</strong>仍只用你填的买入限价、卖出价格与份数；汇总<strong>累计盈亏</strong>（未触发卖出按
+          <strong>−买入限价×份数</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
         </p>
         <div id="calc-verdict" class="pair-calculator__verdict mono" aria-live="polite"></div>
         <h3 class="pair-calculator__batch-chart-title">全量盈亏分布</h3>
