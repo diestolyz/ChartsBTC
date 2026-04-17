@@ -32,8 +32,8 @@
               </button>
               <select
                 id="market-select"
-                aria-label="切换 5 分钟市场（最多 400 个归档）"
-                title="下拉列表最多显示 400 个已入库市场"
+                aria-label="切换 5 分钟市场（条数与「时间跨度」输入一致）"
+                title="归档市场数量 = 上方「时间跨度」数值（每个 5 分钟一盘）"
               >
                 <option value="">当前盘（跟随实时）</option>
               </select>
@@ -44,7 +44,15 @@
           </label>
           <label class="field">
             时间跨度（s）
-            <input type="number" id="limit-input" min="60" max="20000" value="400" step="60" />
+            <input
+              type="number"
+              id="limit-input"
+              min="60"
+              max="20000"
+              value="400"
+              step="60"
+              title="图表序列条数上限；同时作为已入库 5m 市场个数（时段下拉与「计算全量」）"
+            />
           </label>
           <button type="button" class="btn" id="refresh-btn">刷新</button>
           <button type="button" class="btn btn--ghost" id="logout-btn" hidden>退出登录</button>
@@ -134,7 +142,9 @@
           </label>
         </div>
         <p class="pair-calculator__batch-hint muted">
-          开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐各 5 分钟市场的盘口序列，<strong>触发时机</strong>仍用 mid 与上相同，<strong>盈亏金额</strong>仍只用你填的买入限价、卖出价格与份数；汇总<strong>累计盈亏</strong>（未触发卖出按
+          开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐<strong>最近 N 个</strong>5
+          分钟市场的盘口序列（<strong>N = 页头「时间跨度」数值</strong>，与时段下拉一致），<strong>触发时机</strong>仍用 mid
+          与上相同，<strong>盈亏金额</strong>仍只用你填的买入限价、卖出价格与份数；汇总<strong>累计盈亏</strong>（未触发卖出按
           <strong>−买入限价×份数</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
         </p>
         <div id="calc-verdict" class="pair-calculator__verdict mono" aria-live="polite"></div>

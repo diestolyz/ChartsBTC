@@ -47,9 +47,6 @@ let chartStatusLine = "";
 const ROLLOVER_NEAR_END_MS = 5000;
 /** 临近结束后延迟多久执行 loadMarketWindows + 重订阅 */
 const ROLLOVER_REFRESH_AFTER_MS = 8000;
-/** 下拉「时间段」列表最多展示的归档市场数（与 /api/market-windows 的 limit 一致） */
-const MARKET_SELECT_LIMIT = 400;
-
 /** 当前盘结束前临近窗口内触发，排程一次换盘刷新 */
 let rolloverRefreshTimer = null;
 /** @type {string | null} */
@@ -273,6 +270,11 @@ function getTickLimit() {
   return Math.min(50000, Math.max(60, Number(limitInput.value) || 1800));
 }
 
+/** 与页头「时间跨度」一致：归档市场个数（5m 盘）、`/api/market-windows` 与「计算全量」的 windowsLimit。 */
+function getArchivedMarketsLimit() {
+  return Math.min(20000, Math.max(1, Math.floor(Number(limitInput?.value) || 400)));
+}
+
 function chartWsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}/ws/chart`;
@@ -452,7 +454,7 @@ async function loadMarketWindows() {
   if (!marketSelect) return;
   const prev = chartSlugOverride ?? "";
   try {
-    const res = await fetch(`/api/market-windows?limit=${MARKET_SELECT_LIMIT}`, {
+    const res = await fetch(`/api/market-windows?limit=${getArchivedMarketsLimit()}`, {
       credentials: "same-origin",
     });
     const j = await res.json();
@@ -482,14 +484,53 @@ async function loadMarketWindows() {
   }
 }
 
-async function refreshAll() {
+async function loadUiSettingsIntoForm() {
+  if (!limitInput) return;
+  try {
+    const r = await fetch("/api/ui-settings", { credentials: "same-origin" });
+    if (!r.ok) return;
+    const j = await r.json();
+    const v = Number(j.timeSpanSeconds);
+    if (!Number.isFinite(v)) return;
+    limitInput.value = String(Math.min(20000, Math.max(60, Math.floor(v))));
+  } catch {
+    /* noop */
+  }
+}
+
+async function saveUiTimeSpanToServer() {
+  if (!limitInput) return;
+  const timeSpanSeconds = Math.min(20000, Math.max(60, Math.floor(Number(limitInput.value) || 400)));
+  const r = await fetch("/api/ui-settings", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ timeSpanSeconds }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(typeof j.error === "string" ? j.error : `ui-settings ${r.status}`);
+  }
+}
+
+/**
+ * @param {{ saveTimeSpan?: boolean }} [options] 仅用户点「刷新」时传 `saveTimeSpan: true`，把当前时间跨度写入服务端
+ */
+async function refreshAll(options = {}) {
+  if (options.saveTimeSpan === true) {
+    try {
+      await saveUiTimeSpanToServer();
+    } catch (e) {
+      console.warn("[charts] 保存时间跨度失败", e);
+    }
+  }
   await loadMarketWindows();
   if (chartWs?.readyState === WebSocket.OPEN) sendChartSubscribe();
   else connectChartWs();
 }
 
 refreshBtn.addEventListener("click", () => {
-  refreshAll();
+  void refreshAll({ saveTimeSpan: true });
 });
 
 function updateMarketNavButtons() {
@@ -532,6 +573,7 @@ if (marketNextBtn) {
 
 limitInput.addEventListener("change", () => {
   if (chartWs?.readyState === WebSocket.OPEN) sendChartSubscribe();
+  void loadMarketWindows();
 });
 
 const calcPairPrice = document.getElementById("calc-pair-price");
@@ -1031,6 +1073,7 @@ async function runLegPairCalculator() {
       50000,
       Math.max(60, Number(limitInput?.value) || 50000),
     );
+    const windowsLimit = getArchivedMarketsLimit();
     const batchRes = await fetch("/api/calc-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -1041,7 +1084,7 @@ async function runLegPairCalculator() {
         t1,
         P_sellTarget,
         N,
-        windowsLimit: 500,
+        windowsLimit,
         tickLimit,
       }),
     });
@@ -1120,6 +1163,7 @@ async function bootstrap() {
     return;
   }
   if (logoutBtn) logoutBtn.hidden = !auth.authEnabled;
+  await loadUiSettingsIntoForm();
   await refreshAll();
   try {
     await fetchCalcPresets();

@@ -31,6 +31,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CALC_PRESETS_PATH = path.join(__dirname, "data", "calc-presets.json");
+const UI_SETTINGS_PATH = path.join(__dirname, "data", "ui-settings.json");
 const CALC_PRESETS_MAX = 200;
 const CALC_PRESET_NAME_MAX = 80;
 
@@ -710,6 +711,61 @@ api.get("/health", (_req, res) => {
   res.json(buildHealthPayload());
 });
 
+/** 与页头「时间跨度（s）」一致：60～20000 */
+function clampUiTimeSpanSeconds(raw) {
+  const x = Math.floor(Number(raw));
+  if (!Number.isFinite(x)) return 400;
+  return Math.min(20_000, Math.max(60, x));
+}
+
+async function readUiSettingsDoc() {
+  try {
+    const raw = await readFile(UI_SETTINGS_PATH, "utf8");
+    const j = JSON.parse(raw);
+    return j && typeof j === "object" ? j : {};
+  } catch (e) {
+    const err = /** @type {NodeJS.ErrnoException} */ (e);
+    if (err.code === "ENOENT") return {};
+    throw e;
+  }
+}
+
+/**
+ * @param {Record<string, unknown>} doc
+ */
+async function atomicWriteUiSettings(doc) {
+  const dir = path.dirname(UI_SETTINGS_PATH);
+  await mkdir(dir, { recursive: true });
+  const tmp = `${UI_SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
+  await rename(tmp, UI_SETTINGS_PATH);
+}
+
+/** 页头「时间跨度」读写在 `data/ui-settings.json` */
+api.get("/ui-settings", async (_req, res) => {
+  try {
+    const doc = await readUiSettingsDoc();
+    const timeSpanSeconds = clampUiTimeSpanSeconds(doc.timeSpanSeconds);
+    res.json({ ok: true, timeSpanSeconds });
+  } catch (e) {
+    console.error("[charts-btc] /api/ui-settings GET", e);
+    res.status(500).json({ ok: false, error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
+api.post("/ui-settings", async (req, res) => {
+  try {
+    const b = req.body && typeof req.body === "object" ? req.body : {};
+    const timeSpanSeconds = clampUiTimeSpanSeconds(b.timeSpanSeconds);
+    const doc = { ...(await readUiSettingsDoc()), timeSpanSeconds };
+    await atomicWriteUiSettings(doc);
+    res.json({ ok: true, timeSpanSeconds });
+  } catch (e) {
+    console.error("[charts-btc] /api/ui-settings POST", e);
+    res.status(500).json({ ok: false, error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
 function clampTickLimit(raw) {
   const x = Math.floor(Number(raw));
   if (!Number.isFinite(x)) return 3600;
@@ -719,7 +775,7 @@ function clampTickLimit(raw) {
 function clampWindowListLimit(raw) {
   const x = Math.floor(Number(raw));
   if (!Number.isFinite(x)) return 96;
-  return Math.min(500, Math.max(1, x));
+  return Math.min(20_000, Math.max(1, x));
 }
 
 /**
