@@ -71,57 +71,163 @@
       </div>
 
       <section class="pair-calculator" id="pair-calculator" aria-labelledby="pair-calculator-title">
-        <h2 id="pair-calculator-title" class="pair-calculator__title">单侧盈亏测算</h2>
-        <p class="pair-calculator__hint muted">
-          <strong>起始 / 结束</strong>均为<strong>距本盘开盘</strong>的秒数（与 slug 窗口起点对齐）。例如起始 50、结束 70 → 只看开盘后
-          <strong>50s～70s</strong> 内是否满足<strong>买入限价</strong>；起始 0、结束 70 → 开盘后 <strong>0s～70s</strong>。在<strong>[起始,结束]</strong>
-          秒内按时间找<strong>首次</strong>触发：<strong>若 Up mid ≤ 买入限价</strong>则视为买
-          <strong>Up</strong>（若同一时刻 Down 也满足，仍优先按 <strong>Up</strong>）；否则若 <strong>Down mid ≤ 买入限价</strong>则买
-          <strong>Down</strong>。成交后仅从该时刻起用<strong>同一侧 mid</strong>在整盘 0～300s 内找是否 ≥
-          <strong>卖出价格</strong>。<strong>盈亏金额一律按下方填写的买入限价、卖出价格与份数</strong>计算：<strong>已平仓 =
-          (卖出价格 − 买入限价) × 份数</strong>；未触发卖出则<strong>浮亏 = 买入限价 × 份数</strong>。不计手续费与滑点。
-        </p>
-        <div class="pair-calculator__preset-pick">
-          <label class="field field--preset-filter">
-            筛选方案
-            <input
-              type="search"
-              id="calc-preset-filter"
-              placeholder="名称关键字"
-              autocomplete="off"
-              enterkeyhint="search"
-            />
-          </label>
-          <label class="field field--preset-select">
-            已存方案
-            <select id="calc-preset-select" aria-label="切换已保存的测算参数">
-              <option value="">— 选择方案 —</option>
-            </select>
-          </label>
-          <button type="button" class="btn btn--ghost" id="calc-preset-delete">删除所选方案</button>
+        <h2
+          id="pair-calculator-title"
+          class="pair-calculator__title"
+          aria-label="单侧盈亏测算。起始与结束均为距本盘开盘的秒数（与 slug 窗口起点对齐），对应交易端买入时间 N1–N2。在 [起始,结束] 秒内按时间找首次满足 mid 触发且（若开启）买一与 Chainlink 约束的买点：若 Up mid ≤ 买入限价则视为买 Up（若同一时刻 Down 也满足，仍优先 Up）；否则若 Down mid ≤ 买入限价则买 Down。卖出默认仍为同一侧 mid ≥ 卖出价格按卖出价格结算。若勾选「启用止损 + BTC 差价平仓」：顺序为 止损 → 限价 mid → BTC 差价平仓；止损仅看浮亏百分比线；BTC 差价平仓为买入后首次 |现货−开盘| 严格大于卖出阈值即在该时刻以买一（无则用 mid）结算，与浮亏百分比线无关；若至本盘结束从未超过该阈值则按全亏（未平仓，浮亏 = 买入限价 × 份数）。美元盈亏恒为 (结算价 − 买入限价) × 份数。不计手续费与滑点。"
+        >
+          单侧盈亏测算
+        </h2>
+        <div class="pair-calculator__block">
+          <h3 class="pair-calculator__block-title">方案</h3>
+          <div class="pair-calculator__preset-pick pair-calculator__preset-pick--tight">
+            <label class="field field--preset-filter">
+              筛选
+              <input
+                type="search"
+                id="calc-preset-filter"
+                placeholder="关键字"
+                autocomplete="off"
+                enterkeyhint="search"
+              />
+            </label>
+            <label class="field field--preset-select">
+              已存
+              <select id="calc-preset-select" aria-label="切换已保存的测算参数">
+                <option value="">— 选择 —</option>
+              </select>
+            </label>
+            <button type="button" class="btn btn--ghost" id="calc-preset-delete">删除所选</button>
+          </div>
         </div>
 
-        <div class="pair-calculator__fields">
-          <label class="field">
-            买入限价（该侧 mid ≤ 此值才可能触发买入）
-            <input type="number" id="calc-pair-price" min="0" max="1" step="0.01" value="0.37" />
-          </label>
-          <label class="field">
-            买入时机 · 起始（距开盘秒）
-            <input type="number" id="calc-t0" min="0" max="300" step="1" value="0" />
-          </label>
-          <label class="field">
-            买入时机 · 结束（距开盘秒）
-            <input type="number" id="calc-t1" min="0" max="300" step="1" value="28" />
-          </label>
-          <label class="field">
-            卖出价格（已买入那一侧 mid ≥ 此价即触发卖出）
-            <input type="number" id="calc-sell-price" min="0" max="1" step="0.01" value="0.67" />
-          </label>
-          <label class="field">
-            买入份数 N（对应触发的那一腿）
-            <input type="number" id="calc-shares" min="1" max="1000000" step="1" value="10" />
-          </label>
+        <div class="pair-calculator__block">
+          <h3 class="pair-calculator__block-title">基础</h3>
+          <div class="pair-calculator__grid">
+            <label class="field">
+              买入限价
+              <input
+                type="number"
+                id="calc-pair-price"
+                min="0"
+                max="1"
+                step="0.01"
+                value="0.37"
+                aria-label="买入限价：该侧 mid 小于或等于此值才可能触发买入"
+              />
+            </label>
+            <label class="field">
+              起始秒
+              <input
+                type="number"
+                id="calc-t0"
+                min="0"
+                max="300"
+                step="1"
+                value="0"
+                aria-label="买入时间窗起始：距本盘开盘秒数"
+              />
+            </label>
+            <label class="field">
+              结束秒
+              <input
+                type="number"
+                id="calc-t1"
+                min="0"
+                max="300"
+                step="1"
+                value="28"
+                aria-label="买入时间窗结束：距本盘开盘秒数"
+              />
+            </label>
+            <label class="field">
+              卖出限价
+              <input
+                type="number"
+                id="calc-sell-price"
+                min="0"
+                max="1"
+                step="0.01"
+                value="0.67"
+                aria-label="卖出价格：已买入侧 mid 大于或等于此价则按该限价结算平仓"
+              />
+            </label>
+            <label class="field">
+              份数 N
+              <input type="number" id="calc-shares" min="1" max="1000000" step="1" value="10" />
+            </label>
+          </div>
+        </div>
+
+        <div class="pair-calculator__block pair-calculator__block--adv">
+          <h3 class="pair-calculator__block-title" id="pair-calc-adv-title">对价扩展</h3>
+          <p class="pair-calculator__block-lead muted">
+            可不填；未启用时与仅「基础」+ mid 测算一致。
+          </p>
+          <div class="pair-calculator__adv-cols">
+            <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-buy">
+              <h4 class="pair-calculator__col-title" id="pair-calc-adv-buy">买</h4>
+              <label class="pair-calculator__check">
+                <input type="checkbox" id="calc-require-min-bid-above-limit" />
+                <span>买一全程高于买入限价</span>
+              </label>
+              <label class="field">
+                允许买时 |BTC 差价| &lt;（美元）
+                <input
+                  type="number"
+                  id="calc-pair-buy-max-abs-cl-usd"
+                  min="0"
+                  max="9999999"
+                  step="1"
+                  value="0"
+                  title="pairBuyMaxAbsChainlinkUsd：有数据时须严格小于该值；0 关闭"
+                  aria-label="买入前校验：若大于 0，仅在当前 tick 的绝对 BTC 差价严格小于该美元值时才允许作为买点。0 表示不限制。"
+                />
+              </label>
+            </div>
+            <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-sell">
+              <h4 class="pair-calculator__col-title" id="pair-calc-adv-sell">卖</h4>
+              <label class="pair-calculator__check">
+                <input type="checkbox" id="calc-advanced-pair-sell" />
+                <span>启用止损 + BTC 差价平仓</span>
+              </label>
+              <label class="field">
+                平仓：|BTC 差价| &gt;（美元）
+                <input
+                  type="number"
+                  id="calc-cl-abs-above-market-sell-usd"
+                  min="0"
+                  max="9999999"
+                  step="1"
+                  value="0"
+                  title="pairChainlinkAbsAboveMarketSellUsd"
+                  aria-label="勾选「启用止损 + BTC 差价平仓」且本值大于 0 时：自买入成交后的下一数据点起，按时间查找 |现货−开盘|（Chainlink 相对本盘首条现货），首次严格大于该美元阈值则在该时刻平仓；平仓价为该侧买一，无买一则用 mid。盈亏 = (平仓价 − 买入限价) × 份数。若至本盘 300 秒结束从未出现差价大于该阈值，则按全亏（未平仓，浮亏 = 买入限价 × 份数）。0 表示关闭。与下方浮亏止损线无关。"
+                />
+              </label>
+              <label class="field">
+                止损线（%，负）
+                <input
+                  type="number"
+                  id="calc-pair-loss-pct-threshold"
+                  min="-1000"
+                  max="-1"
+                  step="1"
+                  value="-80"
+                  title="pairLossPctThreshold：PnL% ≤ 此值 按买一或 mid 止损"
+                  aria-label="仅在勾选「启用止损 + BTC 差价平仓」时生效。以买一（无则 mid）相对买入限价计算 PnL%，若 PnL% 小于或等于该负数阈值则先于此执行止损平仓。不参与 BTC 差价阈值触发的卖出条件。"
+                />
+              </label>
+            </div>
+          </div>
+          <details class="pair-calculator__details">
+            <summary>BTC 差价平仓 · 简例</summary>
+            <p class="muted">
+              启用后「平仓」填 <strong>100</strong>：买入后首次 <strong>|差价| &gt; 100</strong> 的那一帧用<strong>买一（无则
+              mid）</strong>结算。例 限价 0.12、该帧 0.10、10 份 →
+              <span class="mono">(0.10 − 0.12) × 10 = −0.20 USD</span>。整盘从未超过 100 →
+              <span class="mono">−买入限价 × 份数</span>。止损线只影响提前止损。
+            </p>
+          </details>
         </div>
         <div class="pair-calculator__presets">
           <label class="field">
@@ -143,8 +249,7 @@
         </div>
         <p class="pair-calculator__batch-hint muted">
           开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐<strong>最近 N 个</strong>5
-          分钟市场的盘口序列（<strong>N = 页头「时间跨度」数值</strong>，与时段下拉一致），<strong>触发时机</strong>仍用 mid
-          与上相同，<strong>盈亏金额</strong>仍只用你填的买入限价、卖出价格与份数；汇总<strong>累计盈亏</strong>（未触发卖出按
+          分钟市场的盘口序列（<strong>N = 页头「时间跨度」数值</strong>，与时段下拉一致），<strong>触发与结算规则</strong>与本节「基础」「对价扩展」一致；汇总<strong>累计盈亏</strong>（未触发卖出按
           <strong>−买入限价×份数</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
         </p>
         <div id="calc-verdict" class="pair-calculator__verdict mono" aria-live="polite"></div>

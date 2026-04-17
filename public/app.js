@@ -593,6 +593,11 @@ const calcPresetName = document.getElementById("calc-preset-name");
 const calcPresetSave = document.getElementById("calc-preset-save");
 const calcPresetDelete = document.getElementById("calc-preset-delete");
 const calcPresetMsg = document.getElementById("calc-preset-msg");
+const calcRequireMinBid = document.getElementById("calc-require-min-bid-above-limit");
+const calcPairBuyMaxAbsCl = document.getElementById("calc-pair-buy-max-abs-cl-usd");
+const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
+const calcClAbsMarketSell = document.getElementById("calc-cl-abs-above-market-sell-usd");
+const calcPairLossPct = document.getElementById("calc-pair-loss-pct-threshold");
 
 function setCalcBatchSummary(text) {
   if (!calcBatchSummary) return;
@@ -763,6 +768,29 @@ function getCalcMarketSlug() {
   return chartSlugOverride != null && chartSlugOverride !== "" ? chartSlugOverride : activeSlug;
 }
 
+function readLegPairOptsFromForm() {
+  const maxRaw = num(calcPairBuyMaxAbsCl?.value);
+  let pairBuyMaxAbsChainlinkUsd = 0;
+  if (maxRaw != null && maxRaw > 0) {
+    pairBuyMaxAbsChainlinkUsd = Math.min(9_999_999, Math.max(1, Math.floor(maxRaw)));
+  }
+  const dumpRaw = num(calcClAbsMarketSell?.value);
+  let pairChainlinkAbsAboveMarketSellUsd = 0;
+  if (dumpRaw != null) {
+    pairChainlinkAbsAboveMarketSellUsd = Math.max(0, Math.min(9_999_999, Math.floor(dumpRaw)));
+  }
+  let pairLossPctThreshold = num(calcPairLossPct?.value);
+  if (pairLossPctThreshold == null) pairLossPctThreshold = -80;
+  pairLossPctThreshold = Math.min(-1, Math.max(-1000, Math.round(pairLossPctThreshold)));
+  return {
+    requireMinBidAboveLimit: Boolean(calcRequireMinBid?.checked),
+    pairBuyMaxAbsChainlinkUsd,
+    advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
+    pairChainlinkAbsAboveMarketSellUsd,
+    pairLossPctThreshold,
+  };
+}
+
 function readCalcParams() {
   const P_buyLimit = num(calcPairPrice?.value);
   let t0 = num(calcT0?.value);
@@ -780,7 +808,7 @@ function readCalcParams() {
   }
   t0 = Math.max(0, t0);
   t1 = Math.min(WINDOW_SEC, t1);
-  return { P_buyLimit, t0, t1, P_sellTarget, N };
+  return { P_buyLimit, t0, t1, P_sellTarget, N, ...readLegPairOptsFromForm() };
 }
 
 /** @type {{ id: string; name: string; updatedAt: string; params: Record<string, unknown> }[]} */
@@ -806,7 +834,31 @@ function setCalcPresetMsg(text, kind = "neutral") {
 function collectCalcParamsForSave() {
   const p = readCalcParams();
   if (!p) return null;
-  return { ...p, fullBatch: Boolean(calcFullBatch?.checked) };
+  const {
+    P_buyLimit,
+    t0,
+    t1,
+    P_sellTarget,
+    N,
+    requireMinBidAboveLimit,
+    pairBuyMaxAbsChainlinkUsd,
+    advancedPairSell,
+    pairChainlinkAbsAboveMarketSellUsd,
+    pairLossPctThreshold,
+  } = p;
+  return {
+    P_buyLimit,
+    t0,
+    t1,
+    P_sellTarget,
+    N,
+    requireMinBidAboveLimit,
+    pairBuyMaxAbsChainlinkUsd,
+    advancedPairSell,
+    pairChainlinkAbsAboveMarketSellUsd,
+    pairLossPctThreshold,
+    fullBatch: Boolean(calcFullBatch?.checked),
+  };
 }
 
 /**
@@ -824,6 +876,35 @@ function applyCalcPresetParams(params) {
     calcFullBatch.checked =
       p.fullBatch === true || p.fullBatch === 1 || p.fullBatch === "1" || p.fullBatch === "true";
   }
+  if (calcRequireMinBid) {
+    calcRequireMinBid.checked =
+      p.requireMinBidAboveLimit === true ||
+      p.requireMinBidAboveLimit === 1 ||
+      p.requireMinBidAboveLimit === "1" ||
+      p.requireMinBidAboveLimit === "true";
+  }
+  if (calcPairBuyMaxAbsCl) {
+    const v = num(p.pairBuyMaxAbsChainlinkUsd);
+    calcPairBuyMaxAbsCl.value =
+      v != null && v > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(v)))) : "0";
+  }
+  if (calcAdvancedPairSell) {
+    calcAdvancedPairSell.checked =
+      p.advancedPairSell === true ||
+      p.advancedPairSell === 1 ||
+      p.advancedPairSell === "1" ||
+      p.advancedPairSell === "true";
+  }
+  if (calcClAbsMarketSell) {
+    const d = num(p.pairChainlinkAbsAboveMarketSellUsd);
+    calcClAbsMarketSell.value =
+      d != null ? String(Math.max(0, Math.min(9_999_999, Math.floor(d)))) : "0";
+  }
+  if (calcPairLossPct) {
+    const L = num(p.pairLossPctThreshold);
+    calcPairLossPct.value =
+      L != null ? String(Math.min(-1, Math.max(-1000, Math.round(L)))) : "-80";
+  }
 }
 
 /**
@@ -837,7 +918,7 @@ function rebuildCalcPresetOptions(filterRaw) {
   calcPresetSelect.innerHTML = "";
   const o0 = document.createElement("option");
   o0.value = "";
-  o0.textContent = "— 选择方案 —";
+  o0.textContent = "— 选择 —";
   calcPresetSelect.appendChild(o0);
   const list = q.length
     ? calcPresetsCache.filter((x) => x.name.toLowerCase().includes(q))
@@ -851,7 +932,27 @@ function rebuildCalcPresetOptions(filterRaw) {
     const pb = pp.P_buyLimit != null ? String(pp.P_buyLimit) : "—";
     const t0s = pp.t0 != null ? String(pp.t0) : "—";
     const t1s = pp.t1 != null ? String(pp.t1) : "—";
-    o.title = `${pr.name} — 买入限价 ${pb} · [${t0s},${t1s}]s`;
+    const bidG =
+      pp.requireMinBidAboveLimit === true ||
+      pp.requireMinBidAboveLimit === 1 ||
+      pp.requireMinBidAboveLimit === "1" ||
+      pp.requireMinBidAboveLimit === "true"
+        ? "买一 guard"
+        : "";
+    const clBuy = num(pp.pairBuyMaxAbsChainlinkUsd);
+    const clBuyS = clBuy != null && clBuy > 0 ? `CL<${Math.floor(clBuy)}` : "";
+    const adv =
+      pp.advancedPairSell === true ||
+      pp.advancedPairSell === 1 ||
+      pp.advancedPairSell === "1" ||
+      pp.advancedPairSell === "true"
+        ? "adv卖"
+        : "";
+    const bits = [`${pr.name} — 买 ${pb} · [${t0s},${t1s}]s`];
+    if (bidG) bits.push(bidG);
+    if (clBuyS) bits.push(clBuyS);
+    if (adv) bits.push(adv);
+    o.title = bits.join(" · ");
     calcPresetSelect.appendChild(o);
   }
   const still = prev && [...calcPresetSelect.options].some((opt) => opt.value === prev);
@@ -1025,10 +1126,13 @@ function applySingleCalcResult(r, params) {
   if (r.code === "closed" && r.P_entry != null && r.P_exit != null && r.t_entry != null && r.t_exit != null && r.legLabel) {
     const profit = r.netUsd;
     const sign = profit >= 0 ? "+" : "";
+    const exitKind = /** @type {{ exitKind?: string }} */ (r).exitKind;
+    const exitNote =
+      exitKind === "stop" ? "（止损·买一/mid）" : exitKind === "dump" ? "（BTC差价平仓·买一/mid）" : "";
     setCalcOutcome(
       profit >= 0 ? "profit" : "loss",
       `${profit >= 0 ? "盈利" : "亏损"} ${sign}${fmtUsd(profit)} USD`,
-      `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s → 卖出 ${r.P_exit.toFixed(4)} @${r.t_exit.toFixed(1)}s · ${N} 份`,
+      `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s → 卖出 ${r.P_exit.toFixed(4)} @${r.t_exit.toFixed(1)}s${exitNote} · ${N} 份`,
     );
     return;
   }
@@ -1048,7 +1152,25 @@ async function runLegPairCalculator() {
     setCalcOutcome("warn", "请补全参数", "");
     return;
   }
-  const { P_buyLimit, t0, t1, P_sellTarget, N } = params;
+  const {
+    P_buyLimit,
+    t0,
+    t1,
+    P_sellTarget,
+    N,
+    requireMinBidAboveLimit,
+    pairBuyMaxAbsChainlinkUsd,
+    advancedPairSell,
+    pairChainlinkAbsAboveMarketSellUsd,
+    pairLossPctThreshold,
+  } = params;
+  const calcOpts = {
+    requireMinBidAboveLimit,
+    pairBuyMaxAbsChainlinkUsd,
+    advancedPairSell,
+    pairChainlinkAbsAboveMarketSellUsd,
+    pairLossPctThreshold,
+  };
 
   if (!calcFullBatch?.checked) {
     destroyCalcBatchChart();
@@ -1059,7 +1181,7 @@ async function runLegPairCalculator() {
       setCalcOutcome("warn", "无数据", "请先加载图表");
       return;
     }
-    const r = computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N);
+    const r = computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N, calcOpts);
     applySingleCalcResult(r, params);
     return;
   }
@@ -1086,6 +1208,11 @@ async function runLegPairCalculator() {
         N,
         windowsLimit,
         tickLimit,
+        requireMinBidAboveLimit,
+        pairBuyMaxAbsChainlinkUsd,
+        advancedPairSell,
+        pairChainlinkAbsAboveMarketSellUsd,
+        pairLossPctThreshold,
       }),
     });
     const batchJ = await batchRes.json().catch(() => ({}));

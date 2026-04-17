@@ -941,7 +941,8 @@ api.post("/calc-batch", async (req, res) => {
 
       try {
         const ticks = bySlug.get(slug) ?? [];
-        const r = computeLegPnlFromRows(ticks, slug, P_buyLimit, t0, t1, P_sellTarget, N);
+        const calcOpts = normalizeLegPairOpts(b);
+        const r = computeLegPnlFromRows(ticks, slug, P_buyLimit, t0, t1, P_sellTarget, N, calcOpts);
         total += r.netUsd;
         if (r.code === "no_buy" || r.code === "no_points" || r.code === "no_data") {
           nSkip += 1;
@@ -1025,7 +1026,7 @@ api.get("/market-windows", async (req, res) => {
 
 /**
  * @param {unknown} raw
- * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean } | null}
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, requireMinBidAboveLimit: boolean, pairBuyMaxAbsChainlinkUsd: number, advancedPairSell: boolean, pairChainlinkAbsAboveMarketSellUsd: number, pairLossPctThreshold: number } | null}
  */
 function normalizeCalcPresetParams(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -1048,7 +1049,46 @@ function normalizeCalcPresetParams(raw) {
   }
   t0 = Math.max(0, t0);
   t1 = Math.min(WINDOW_SEC, t1);
-  return { P_buyLimit, t0, t1, P_sellTarget, N, fullBatch };
+
+  const legOpts = normalizeLegPairOpts(o);
+
+  return {
+    P_buyLimit,
+    t0,
+    t1,
+    P_sellTarget,
+    N,
+    fullBatch,
+    ...legOpts,
+  };
+}
+
+/**
+ * 单侧测算扩展项（与 `public/legPairPnl.mjs` 的 opts 一致）。
+ * @param {unknown} raw
+ */
+function normalizeLegPairOpts(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  const requireMinBidAboveLimit = Boolean(o.requireMinBidAboveLimit);
+  let maxCl = num(o.pairBuyMaxAbsChainlinkUsd);
+  if (maxCl == null || maxCl <= 0) maxCl = 0;
+  else maxCl = Math.min(9_999_999, Math.max(1, Math.floor(maxCl)));
+  const advancedPairSell = Boolean(
+    o.advancedPairSell === true || o.advancedPairSell === 1 || o.advancedPairSell === "1" || o.advancedPairSell === "true",
+  );
+  let dump = num(o.pairChainlinkAbsAboveMarketSellUsd);
+  if (dump == null) dump = 0;
+  dump = Math.max(0, Math.min(9_999_999, Math.floor(dump)));
+  let loss = num(o.pairLossPctThreshold);
+  if (loss == null) loss = -80;
+  loss = Math.min(-1, Math.max(-1000, Math.round(loss)));
+  return {
+    requireMinBidAboveLimit,
+    pairBuyMaxAbsChainlinkUsd: maxCl,
+    advancedPairSell,
+    pairChainlinkAbsAboveMarketSellUsd: dump,
+    pairLossPctThreshold: loss,
+  };
 }
 
 async function readCalcPresetsDoc() {
