@@ -359,9 +359,6 @@ h1 {
   flex-wrap: wrap;
   gap: 12px 16px;
   align-items: flex-end;
-  margin-bottom: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
 }
 
 .pair-calculator__presets-actions {
@@ -372,10 +369,16 @@ h1 {
 }
 
 .pair-calculator__preset-msg {
-  flex: 1 1 100%;
   margin: 0;
   font-size: 12px;
   min-height: 1.25em;
+}
+
+.pair-calculator__fields{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-start;
 }
 
 .pair-calculator__preset-msg--warn {

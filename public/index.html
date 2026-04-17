@@ -98,6 +98,16 @@
               </select>
             </label>
             <button type="button" class="btn btn--ghost" id="calc-preset-delete">删除所选</button>
+            <div class="pair-calculator__presets">
+              <label class="field">
+                方案名称（保存）
+                <input type="text" id="calc-preset-name" placeholder="同名将覆盖" maxlength="80" />
+              </label>
+              <div class="pair-calculator__presets-actions">
+                <button type="button" class="btn" id="calc-preset-save">保存当前参数</button>
+              </div>
+              <p id="calc-preset-msg" class="pair-calculator__preset-msg muted" aria-live="polite"></p>
+            </div>
           </div>
         </div>
 
@@ -191,53 +201,36 @@
                 <input type="checkbox" id="calc-advanced-pair-sell" />
                 <span>启用止损 + BTC 差价平仓</span>
               </label>
-              <label class="field">
-                平仓：|BTC 差价| &gt;（美元）
-                <input
-                  type="number"
-                  id="calc-cl-abs-above-market-sell-usd"
-                  min="0"
-                  max="9999999"
-                  step="1"
-                  value="0"
-                  title="pairChainlinkAbsAboveMarketSellUsd"
-                  aria-label="勾选「启用止损 + BTC 差价平仓」且本值大于 0 时：自买入成交后的下一数据点起，按时间查找 |现货−开盘|（Chainlink 相对本盘首条现货），首次严格大于该美元阈值则在该时刻平仓；平仓价为该侧买一，无买一则用 mid。盈亏 = (平仓价 − 买入限价) × 份数。若至本盘 300 秒结束从未出现差价大于该阈值，则按全亏（未平仓，浮亏 = 买入限价 × 份数）。0 表示关闭。与下方浮亏止损线无关。"
-                />
-              </label>
-              <label class="field">
-                止损线（%，负）
-                <input
-                  type="number"
-                  id="calc-pair-loss-pct-threshold"
-                  min="-1000"
-                  max="-1"
-                  step="1"
-                  value="-80"
-                  title="pairLossPctThreshold：PnL% ≤ 此值 按买一或 mid 止损"
-                  aria-label="仅在勾选「启用止损 + BTC 差价平仓」时生效。以买一（无则 mid）相对买入限价计算 PnL%，若 PnL% 小于或等于该负数阈值则先于此执行止损平仓。不参与 BTC 差价阈值触发的卖出条件。"
-                />
-              </label>
+              <div class="pair-calculator__fields">
+                <label class="field">
+                  平仓：|BTC 差价| &gt;（美元）
+                  <input
+                    type="number"
+                    id="calc-cl-abs-above-market-sell-usd"
+                    min="0"
+                    max="9999999"
+                    step="1"
+                    value="0"
+                    title="pairChainlinkAbsAboveMarketSellUsd"
+                    aria-label="勾选「启用止损 + BTC 差价平仓」且本值大于 0 时：自买入成交后的下一数据点起，按时间查找 |现货−开盘|（Chainlink 相对本盘首条现货），首次严格大于该美元阈值则在该时刻平仓；平仓价为该侧买一，无买一则用 mid。盈亏 = (平仓价 − 买入限价) × 份数。若至本盘 300 秒结束从未出现差价大于该阈值，则按全亏（未平仓，浮亏 = 买入限价 × 份数）。0 表示关闭。与下方浮亏止损线无关。"
+                  />
+                </label>
+                <label class="field">
+                  止损线（%，负）
+                  <input
+                    type="number"
+                    id="calc-pair-loss-pct-threshold"
+                    min="-1000"
+                    max="-1"
+                    step="1"
+                    value="-80"
+                    title="pairLossPctThreshold：PnL% ≤ 此值 按买一或 mid 止损"
+                    aria-label="仅在勾选「启用止损 + BTC 差价平仓」时生效。以买一（无则 mid）相对买入限价计算 PnL%，若 PnL% 小于或等于该负数阈值则先于此执行止损平仓。不参与 BTC 差价阈值触发的卖出条件。"
+                  />
+                </label>
+              </div>
             </div>
           </div>
-          <details class="pair-calculator__details">
-            <summary>BTC 差价平仓 · 简例</summary>
-            <p class="muted">
-              启用后「平仓」填 <strong>100</strong>：买入后首次 <strong>|差价| &gt; 100</strong> 的那一帧用<strong>买一（无则
-              mid）</strong>结算。例 限价 0.12、该帧 0.10、10 份 →
-              <span class="mono">(0.10 − 0.12) × 10 = −0.20 USD</span>。整盘从未超过 100 →
-              <span class="mono">−买入限价 × 份数</span>。止损线只影响提前止损。
-            </p>
-          </details>
-        </div>
-        <div class="pair-calculator__presets">
-          <label class="field">
-            方案名称（保存）
-            <input type="text" id="calc-preset-name" placeholder="同名将覆盖" maxlength="80" />
-          </label>
-          <div class="pair-calculator__presets-actions">
-            <button type="button" class="btn" id="calc-preset-save">保存当前参数</button>
-          </div>
-          <p id="calc-preset-msg" class="pair-calculator__preset-msg muted" aria-live="polite"></p>
         </div>
         <div class="pair-calculator__actions">
           <button type="button" class="btn" id="calc-submit">确认计算</button>
