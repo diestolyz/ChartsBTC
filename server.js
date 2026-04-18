@@ -30,6 +30,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/** 历史：单侧测算预设曾存于此；启动时若库表为空则一次性导入后仍可手动保留备份 */
 const CALC_PRESETS_PATH = path.join(__dirname, "data", "calc-presets.json");
 const UI_SETTINGS_PATH = path.join(__dirname, "data", "ui-settings.json");
 const CALC_PRESETS_MAX = 200;
@@ -536,6 +537,94 @@ async function ensureDb() {
       KEY idx_slug_ts (market_slug(191), ts_ms)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS charts_calc_presets (
+      id CHAR(36) NOT NULL,
+      name VARCHAR(80) NOT NULL,
+      params_json JSON NOT NULL,
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (id),
+      UNIQUE KEY uk_charts_calc_presets_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+  await migrateCalcPresetsFromJsonIfNeeded();
+}
+
+/**
+ * 首次部署：表为空时从 `data/calc-presets.json` 导入（与盘口数据同属 MySQL）。
+ */
+async function migrateCalcPresetsFromJsonIfNeeded() {
+  if (!pool) return;
+  const [cntRows] = await pool.query(`SELECT COUNT(*) AS c FROM charts_calc_presets`);
+  const n = Number(/** @type {{ c?: unknown }[]} */ (cntRows)[0]?.c);
+  if (!Number.isFinite(n) || n > 0) return;
+  let doc;
+  try {
+    doc = await readCalcPresetsDoc();
+  } catch {
+    return;
+  }
+  const presets = Array.isArray(doc.presets) ? doc.presets : [];
+  let imported = 0;
+  for (const p of presets) {
+    if (!p || typeof p !== "object") continue;
+    const name = typeof /** @type {{ name?: unknown }} */ (p).name === "string" ? String(p.name).trim() : "";
+    if (!name || name.length > CALC_PRESET_NAME_MAX) continue;
+    const id =
+      typeof /** @type {{ id?: unknown }} */ (p).id === "string" && /** @type {{ id: string }} */ (p).id.length >= 32
+        ? /** @type {{ id: string }} */ (p).id
+        : crypto.randomUUID();
+    const rawParams = /** @type {{ params?: unknown }} */ (p).params;
+    if (rawParams == null || typeof rawParams !== "object") continue;
+    const params = normalizeCalcPresetParams(rawParams);
+    if (!params) continue;
+    let updatedAt = new Date();
+    const u = /** @type {{ updatedAt?: unknown }} */ (p).updatedAt;
+    if (typeof u === "string" && Number.isFinite(Date.parse(u))) updatedAt = new Date(u);
+    try {
+      await pool.execute(
+        `INSERT INTO charts_calc_presets (id, name, params_json, updated_at) VALUES (?, ?, ?, ?)`,
+        [id, name, JSON.stringify(params), updatedAt],
+      );
+      imported += 1;
+    } catch (e) {
+      const err = /** @type {{ code?: string }} */ (e);
+      if (err.code === "ER_DUP_ENTRY") continue;
+      throw e;
+    }
+  }
+  if (imported > 0) {
+    console.log(`[charts-btc] 已从 ${CALC_PRESETS_PATH} 导入 ${imported} 条测算预设至表 charts_calc_presets`);
+  }
+}
+
+/**
+ * @returns {Promise<Array<{ id: string; name: string; params: object; updatedAt: string }>>}
+ */
+async function fetchCalcPresetsFromDb() {
+  if (!pool) return [];
+  const [rows] = await pool.execute(
+    `SELECT id, name, params_json, updated_at FROM charts_calc_presets ORDER BY updated_at DESC`,
+  );
+  return (Array.isArray(rows) ? rows : []).map((r) => {
+    const row = /** @type {{ id: string; name: string; params_json: unknown; updated_at: unknown }} */ (r);
+    let params = row.params_json;
+    if (typeof params === "string") {
+      try {
+        params = JSON.parse(params);
+      } catch {
+        params = {};
+      }
+    }
+    const ua = row.updated_at;
+    const updatedAt =
+      ua instanceof Date
+        ? ua.toISOString()
+        : typeof ua === "string"
+          ? ua
+          : new Date().toISOString();
+    return { id: row.id, name: row.name, params, updatedAt };
+  });
 }
 
 async function insertTick(row) {
@@ -1108,34 +1197,15 @@ async function readCalcPresetsDoc() {
   }
 }
 
-/**
- * @param {{ version?: number; presets: unknown[] }} doc
- */
-async function atomicWriteCalcPresets(doc) {
-  const dir = path.dirname(CALC_PRESETS_PATH);
-  await mkdir(dir, { recursive: true });
-  const tmp = `${CALC_PRESETS_PATH}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(doc, null, 2)}\n`, "utf8");
-  await rename(tmp, CALC_PRESETS_PATH);
-}
-
-/** 单侧测算参数预设（存 data/calc-presets.json） */
+/** 单侧测算参数预设（MySQL `charts_calc_presets`，与 `pm_book_ticks` 同库） */
 api.get("/calc-presets", async (_req, res) => {
   try {
-    const doc = await readCalcPresetsDoc();
-    const presets = Array.isArray(doc.presets) ? doc.presets : [];
-    const sorted = [...presets].sort((a, b) => {
-      const ta =
-        a && typeof a === "object" && typeof /** @type {{ updatedAt?: string }} */ (a).updatedAt === "string"
-          ? Date.parse(/** @type {{ updatedAt: string }} */ (a).updatedAt)
-          : 0;
-      const tb =
-        b && typeof b === "object" && typeof /** @type {{ updatedAt?: string }} */ (b).updatedAt === "string"
-          ? Date.parse(/** @type {{ updatedAt: string }} */ (b).updatedAt)
-          : 0;
-      return tb - ta;
-    });
-    res.json({ ok: true, presets: sorted });
+    if (!pool) {
+      res.status(503).json({ ok: false, error: "database_unavailable" });
+      return;
+    }
+    const presets = await fetchCalcPresetsFromDb();
+    res.json({ ok: true, presets });
   } catch (e) {
     console.error("[charts-btc] /api/calc-presets GET", e);
     res.status(500).json({ ok: false, error: String(e instanceof Error ? e.message : e) });
@@ -1144,6 +1214,10 @@ api.get("/calc-presets", async (_req, res) => {
 
 api.post("/calc-presets", async (req, res) => {
   try {
+    if (!pool) {
+      res.status(503).json({ ok: false, error: "database_unavailable" });
+      return;
+    }
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const nameRaw = typeof body.name === "string" ? body.name.trim() : "";
     if (!nameRaw.length || nameRaw.length > CALC_PRESET_NAME_MAX) {
@@ -1155,42 +1229,36 @@ api.post("/calc-presets", async (req, res) => {
       res.status(400).json({ ok: false, error: "invalid_params" });
       return;
     }
-    const doc = await readCalcPresetsDoc();
-    const presets = Array.isArray(doc.presets) ? [...doc.presets] : [];
-    const now = new Date().toISOString();
-    const idx = presets.findIndex(
-      (p) => p && typeof p === "object" && String(/** @type {{ name?: string }} */ (p).name) === nameRaw,
+    const now = new Date();
+    const [existingRows] = await pool.execute(
+      `SELECT id FROM charts_calc_presets WHERE name = ? LIMIT 1`,
+      [nameRaw],
     );
-    if (idx >= 0) {
-      const prev = presets[idx];
-      const prevId =
-        prev && typeof prev === "object" && typeof /** @type {{ id?: string }} */ (prev).id === "string"
-          ? /** @type {{ id: string }} */ (prev).id
-          : "";
-      presets[idx] = {
-        id: prevId || crypto.randomUUID(),
-        name: nameRaw,
-        params,
-        updatedAt: now,
-      };
+    const ex = Array.isArray(existingRows) && existingRows[0] ? /** @type {{ id: string }} */ (existingRows[0]) : null;
+    if (ex) {
+      await pool.execute(`UPDATE charts_calc_presets SET params_json = ?, updated_at = ? WHERE id = ?`, [
+        JSON.stringify(params),
+        now,
+        ex.id,
+      ]);
     } else {
-      if (presets.length >= CALC_PRESETS_MAX) {
+      const [cntRows] = await pool.execute(`SELECT COUNT(*) AS c FROM charts_calc_presets`);
+      const c = Number(/** @type {{ c?: unknown }} */ (/** @type {unknown[]} */ (cntRows)[0])?.c);
+      if (Number.isFinite(c) && c >= CALC_PRESETS_MAX) {
         res.status(400).json({ ok: false, error: "too_many_presets" });
         return;
       }
-      presets.push({
-        id: crypto.randomUUID(),
-        name: nameRaw,
-        params,
-        updatedAt: now,
-      });
+      await pool.execute(
+        `INSERT INTO charts_calc_presets (id, name, params_json, updated_at) VALUES (?, ?, ?, ?)`,
+        [crypto.randomUUID(), nameRaw, JSON.stringify(params), now],
+      );
     }
-    doc.version = 1;
-    doc.presets = presets;
-    await atomicWriteCalcPresets(doc);
-    const saved = presets.find(
-      (p) => p && typeof p === "object" && String(/** @type {{ name?: string }} */ (p).name) === nameRaw,
-    );
+    const presets = await fetchCalcPresetsFromDb();
+    const saved = presets.find((p) => p.name === nameRaw);
+    if (!saved) {
+      res.status(500).json({ ok: false, error: "save_failed" });
+      return;
+    }
     res.json({ ok: true, preset: saved });
   } catch (e) {
     console.error("[charts-btc] /api/calc-presets POST", e);
@@ -1200,22 +1268,21 @@ api.post("/calc-presets", async (req, res) => {
 
 api.delete("/calc-presets/:id", async (req, res) => {
   try {
+    if (!pool) {
+      res.status(503).json({ ok: false, error: "database_unavailable" });
+      return;
+    }
     const id = typeof req.params.id === "string" ? req.params.id.trim() : "";
     if (!id) {
       res.status(400).json({ ok: false, error: "invalid_id" });
       return;
     }
-    const doc = await readCalcPresetsDoc();
-    const presets = Array.isArray(doc.presets) ? doc.presets : [];
-    const next = presets.filter(
-      (p) => !(p && typeof p === "object" && /** @type {{ id?: string }} */ (p).id === id),
-    );
-    if (next.length === presets.length) {
+    const [result] = await pool.execute(`DELETE FROM charts_calc_presets WHERE id = ?`, [id]);
+    const affected = /** @type {{ affectedRows?: number }} */ (result).affectedRows ?? 0;
+    if (affected === 0) {
       res.status(404).json({ ok: false, error: "not_found" });
       return;
     }
-    doc.presets = next;
-    await atomicWriteCalcPresets(doc);
     res.json({ ok: true });
   } catch (e) {
     console.error("[charts-btc] /api/calc-presets DELETE", e);
