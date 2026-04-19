@@ -181,19 +181,34 @@
                 <input type="checkbox" id="calc-require-min-bid-above-limit" />
                 <span>买一全程高于买入限价</span>
               </label>
-              <label class="field">
-                允许买时 |BTC 差价| &lt;（美元）
-                <input
-                  type="number"
-                  id="calc-pair-buy-max-abs-cl-usd"
-                  min="0"
-                  max="9999999"
-                  step="1"
-                  value="0"
-                  title="pairBuyMaxAbsChainlinkUsd：有数据时须严格小于该值；0 关闭"
-                  aria-label="买入前校验：若大于 0，仅在当前 tick 的绝对 BTC 差价严格小于该美元值时才允许作为买点。0 表示不限制。"
-                />
-              </label>
+              <div class="pair-calculator__fields">
+                <label class="field">
+                  允许买时 |BTC 差价| ≥（美元，区间下界）
+                  <input
+                    type="number"
+                    id="calc-pair-buy-min-abs-cl-usd"
+                    min="0"
+                    max="9999999"
+                    step="1"
+                    value="0"
+                    title="pairBuyMinAbsChainlinkUsd：有有效差价时须 ≥ 该值；0 关闭下界"
+                    aria-label="买入前校验：若大于 0，仅在当前 tick 的绝对 BTC 差价大于或等于该美元值时才允许作为买点；无有效 Chainlink 差价数据则不触发。0 表示不限制下界。"
+                  />
+                </label>
+                <label class="field">
+                  允许买时 |BTC 差价| &lt;（美元，区间上界）
+                  <input
+                    type="number"
+                    id="calc-pair-buy-max-abs-cl-usd"
+                    min="0"
+                    max="9999999"
+                    step="1"
+                    value="0"
+                    title="pairBuyMaxAbsChainlinkUsd：有数据时须严格小于该值；0 关闭上界"
+                    aria-label="买入前校验：若大于 0，仅在当前 tick 的绝对 BTC 差价严格小于该美元值时才允许作为买点。0 表示不限制上界。"
+                  />
+                </label>
+              </div>
             </div>
             <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-sell">
               <h4 class="pair-calculator__col-title" id="pair-calc-adv-sell">卖</h4>

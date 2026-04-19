@@ -1115,7 +1115,7 @@ api.get("/market-windows", async (req, res) => {
 
 /**
  * @param {unknown} raw
- * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, requireMinBidAboveLimit: boolean, pairBuyMaxAbsChainlinkUsd: number, advancedPairSell: boolean, pairChainlinkAbsAboveMarketSellUsd: number, pairLossPctThreshold: number } | null}
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, requireMinBidAboveLimit: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, advancedPairSell: boolean, pairChainlinkAbsAboveMarketSellUsd: number, pairLossPctThreshold: number } | null}
  */
 function normalizeCalcPresetParams(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -1159,6 +1159,9 @@ function normalizeCalcPresetParams(raw) {
 function normalizeLegPairOpts(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
   const requireMinBidAboveLimit = Boolean(o.requireMinBidAboveLimit);
+  let minCl = num(o.pairBuyMinAbsChainlinkUsd);
+  if (minCl == null || minCl <= 0) minCl = 0;
+  else minCl = Math.min(9_999_999, Math.max(1, Math.floor(minCl)));
   let maxCl = num(o.pairBuyMaxAbsChainlinkUsd);
   if (maxCl == null || maxCl <= 0) maxCl = 0;
   else maxCl = Math.min(9_999_999, Math.max(1, Math.floor(maxCl)));
@@ -1173,6 +1176,7 @@ function normalizeLegPairOpts(raw) {
   loss = Math.min(-1, Math.max(-1000, Math.round(loss)));
   return {
     requireMinBidAboveLimit,
+    pairBuyMinAbsChainlinkUsd: minCl,
     pairBuyMaxAbsChainlinkUsd: maxCl,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd: dump,

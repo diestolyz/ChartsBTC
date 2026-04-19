@@ -38,7 +38,8 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
  * 与 BTC5Mins `pair-limit-params` 对齐的可选约束（未传或默认时与旧版行为一致：仅 mid 触发 + 限价卖出）。
  * @typedef {object} LegPairPnlOpts
  * @property {boolean} [requireMinBidAboveLimit] — 仅 **买价 ≤0.5** 时生效：N1(=t0) 前 Up/Down 买一最小值及买入当刻两买一均须严格大于买入限价
- * @property {number} [pairBuyMaxAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| 严格小于该值（美元）的 tick 上允许触发买；0 关闭
+ * @property {number} [pairBuyMinAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| ≥ 该值（美元）的 tick 上允许触发买；无有效 btc 差价数据则不触发；0 关闭
+ * @property {number} [pairBuyMaxAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| 严格小于该值（美元）的 tick 上允许触发买；0 关闭上界
  * @property {boolean} [advancedPairSell] — 为真时启用 `pairLossPctThreshold` 止损与 `pairChainlinkAbsAboveMarketSellUsd` 差价市价卖（参考买一）
  * @property {number} [pairChainlinkAbsAboveMarketSellUsd] — 买入后 |现货−开盘| **首次严格大于**该美元值即在该 tick 按参考价（买一，缺则用 mid）平仓；至窗口末从未超过则全亏；0 关闭
  * @property {number} [pairLossPctThreshold] — 负数 %；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down），若曾低于 买价×(|阈值|/100) 则记止损亏损，亏损额 = 买价×(|阈值|/100)×份数；若至序列结束未触发则浮亏仍按同比例或全额（见实现）。
@@ -59,6 +60,8 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   }
 
   const requireMinBidAboveLimit = Boolean(opts.requireMinBidAboveLimit);
+  const minClUsd = num(opts.pairBuyMinAbsChainlinkUsd);
+  const minAbsChainlinkOn = minClUsd != null && minClUsd > 0;
   const maxClUsd = num(opts.pairBuyMaxAbsChainlinkUsd);
   const maxAbsChainlinkOn = maxClUsd != null && maxClUsd > 0;
 
@@ -165,6 +168,9 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
         }
       }
 
+      if (minAbsChainlinkOn && (p.absCl == null || p.absCl < minClUsd - 1e-12)) {
+        continue;
+      }
       if (maxAbsChainlinkOn && p.absCl != null && p.absCl >= maxClUsd - 1e-12) {
         continue;
       }
@@ -178,6 +184,9 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       const p = points[i];
       if (p.sec < t0 || p.sec > t1) continue;
       if (!(p.u <= P_buyLimit || p.d <= P_buyLimit)) continue;
+      if (minAbsChainlinkOn && (p.absCl == null || p.absCl < minClUsd - 1e-12)) {
+        continue;
+      }
       if (maxAbsChainlinkOn && p.absCl != null && p.absCl >= maxClUsd - 1e-12) {
         continue;
       }

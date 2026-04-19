@@ -594,6 +594,7 @@ const calcPresetSave = document.getElementById("calc-preset-save");
 const calcPresetDelete = document.getElementById("calc-preset-delete");
 const calcPresetMsg = document.getElementById("calc-preset-msg");
 const calcRequireMinBid = document.getElementById("calc-require-min-bid-above-limit");
+const calcPairBuyMinAbsCl = document.getElementById("calc-pair-buy-min-abs-cl-usd");
 const calcPairBuyMaxAbsCl = document.getElementById("calc-pair-buy-max-abs-cl-usd");
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcClAbsMarketSell = document.getElementById("calc-cl-abs-above-market-sell-usd");
@@ -769,6 +770,11 @@ function getCalcMarketSlug() {
 }
 
 function readLegPairOptsFromForm() {
+  const minRaw = num(calcPairBuyMinAbsCl?.value);
+  let pairBuyMinAbsChainlinkUsd = 0;
+  if (minRaw != null && minRaw > 0) {
+    pairBuyMinAbsChainlinkUsd = Math.min(9_999_999, Math.max(1, Math.floor(minRaw)));
+  }
   const maxRaw = num(calcPairBuyMaxAbsCl?.value);
   let pairBuyMaxAbsChainlinkUsd = 0;
   if (maxRaw != null && maxRaw > 0) {
@@ -784,6 +790,7 @@ function readLegPairOptsFromForm() {
   pairLossPctThreshold = Math.min(-1, Math.max(-1000, Math.round(pairLossPctThreshold)));
   return {
     requireMinBidAboveLimit: Boolean(calcRequireMinBid?.checked),
+    pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairChainlinkAbsAboveMarketSellUsd,
@@ -841,6 +848,7 @@ function collectCalcParamsForSave() {
     P_sellTarget,
     N,
     requireMinBidAboveLimit,
+    pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
@@ -853,6 +861,7 @@ function collectCalcParamsForSave() {
     P_sellTarget,
     N,
     requireMinBidAboveLimit,
+    pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
@@ -882,6 +891,11 @@ function applyCalcPresetParams(params) {
       p.requireMinBidAboveLimit === 1 ||
       p.requireMinBidAboveLimit === "1" ||
       p.requireMinBidAboveLimit === "true";
+  }
+  if (calcPairBuyMinAbsCl) {
+    const vmin = num(p.pairBuyMinAbsChainlinkUsd);
+    calcPairBuyMinAbsCl.value =
+      vmin != null && vmin > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(vmin)))) : "0";
   }
   if (calcPairBuyMaxAbsCl) {
     const v = num(p.pairBuyMaxAbsChainlinkUsd);
@@ -939,8 +953,16 @@ function rebuildCalcPresetOptions(filterRaw) {
       pp.requireMinBidAboveLimit === "true"
         ? "买一 guard"
         : "";
-    const clBuy = num(pp.pairBuyMaxAbsChainlinkUsd);
-    const clBuyS = clBuy != null && clBuy > 0 ? `CL<${Math.floor(clBuy)}` : "";
+    const clMin = num(pp.pairBuyMinAbsChainlinkUsd);
+    const clMax = num(pp.pairBuyMaxAbsChainlinkUsd);
+    let clBuyS = "";
+    if (clMin != null && clMin > 0 && clMax != null && clMax > 0) {
+      clBuyS = `CL[${Math.floor(clMin)},${Math.floor(clMax)})`;
+    } else if (clMin != null && clMin > 0) {
+      clBuyS = `CL≥${Math.floor(clMin)}`;
+    } else if (clMax != null && clMax > 0) {
+      clBuyS = `CL<${Math.floor(clMax)}`;
+    }
     const adv =
       pp.advancedPairSell === true ||
       pp.advancedPairSell === 1 ||
@@ -1166,6 +1188,7 @@ async function runLegPairCalculator() {
     P_sellTarget,
     N,
     requireMinBidAboveLimit,
+    pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
@@ -1173,6 +1196,7 @@ async function runLegPairCalculator() {
   } = params;
   const calcOpts = {
     requireMinBidAboveLimit,
+    pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
@@ -1216,6 +1240,7 @@ async function runLegPairCalculator() {
         windowsLimit,
         tickLimit,
         requireMinBidAboveLimit,
+        pairBuyMinAbsChainlinkUsd,
         pairBuyMaxAbsChainlinkUsd,
         advancedPairSell,
         pairChainlinkAbsAboveMarketSellUsd,

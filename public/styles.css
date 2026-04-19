@@ -258,7 +258,7 @@ h1 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 18px 28px;
-  max-width: 52rem;
+  max-width: 100rem;
 }
 
 @media (max-width: 640px) {
