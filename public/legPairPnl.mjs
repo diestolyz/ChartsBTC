@@ -37,11 +37,11 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
 /**
  * 与 BTC5Mins `pair-limit-params` 对齐的可选约束（未传或默认时与旧版行为一致：仅 mid 触发 + 限价卖出）。
  * @typedef {object} LegPairPnlOpts
- * @property {boolean} [requireMinBidAboveLimit] — N1(=t0) 前 Up/Down 买一最小值及买入当刻买一均须严格大于买入限价
+ * @property {boolean} [requireMinBidAboveLimit] — 仅 **买价 ≤0.5** 时生效：N1(=t0) 前 Up/Down 买一最小值及买入当刻两买一均须严格大于买入限价
  * @property {number} [pairBuyMaxAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| 严格小于该值（美元）的 tick 上允许触发买；0 关闭
  * @property {boolean} [advancedPairSell] — 为真时启用 `pairLossPctThreshold` 止损与 `pairChainlinkAbsAboveMarketSellUsd` 差价市价卖（参考买一）
  * @property {number} [pairChainlinkAbsAboveMarketSellUsd] — 买入后 |现货−开盘| **首次严格大于**该美元值即在该 tick 按参考价（买一，缺则用 mid）平仓；至窗口末从未超过则全亏；0 关闭
- * @property {number} [pairLossPctThreshold] — 负数 %；**仅**市价止损：参考价上 pnl%≤阈值即平仓；不参与差价卖出条件
+ * @property {number} [pairLossPctThreshold] — 负数 %；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down），若曾低于 买价×(|阈值|/100) 则记止损亏损，亏损额 = 买价×(|阈值|/100)×份数；若至序列结束未触发则浮亏仍按同比例或全额（见实现）。
  */
 
 /**
@@ -105,7 +105,9 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     return { code: "no_points", netUsd: 0 };
   }
 
-  if (requireMinBidAboveLimit && t0 > 0) {
+  const highBuyMode = P_buyLimit > 0.5 + 1e-12;
+
+  if (requireMinBidAboveLimit && t0 > 0 && !highBuyMode) {
     let minUb = null;
     let minDb = null;
     for (const p of points) {
@@ -125,26 +127,74 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   }
 
   let buyIdx = -1;
-  for (let i = 0; i < points.length; i++) {
-    const p = points[i];
-    if (p.sec < t0 || p.sec > t1) continue;
-    if (!(p.u <= P_buyLimit || p.d <= P_buyLimit)) continue;
-    if (maxAbsChainlinkOn && p.absCl != null && p.absCl >= maxClUsd - 1e-12) {
-      continue;
+  /** 买价 &gt;0.5 时由下方循环写入：'up' | 'down' */
+  let highBuyLeg = /** @type {"up" | "down" | null} */ (null);
+
+  if (highBuyMode) {
+    const eps = 1e-12;
+    for (let i = 1; i < points.length; i++) {
+      const p = points[i];
+      const prev = points[i - 1];
+      if (p.sec < t0 || p.sec > t1) continue;
+
+      const uPrev = prev.u;
+      const uCur = p.u;
+      const dPrev = prev.d;
+      const dCur = p.d;
+      if (
+        uPrev == null ||
+        uCur == null ||
+        dPrev == null ||
+        dCur == null
+      ) {
+        continue;
+      }
+
+      const upCross =
+        uPrev <= P_buyLimit + eps && uCur >= P_buyLimit - eps;
+      const downCross =
+        dPrev <= P_buyLimit + eps && dCur >= P_buyLimit - eps;
+      if (!upCross && !downCross) continue;
+
+      const side = upCross && downCross ? "up" : upCross ? "up" : "down";
+
+      for (let k = 0; k < i; k++) {
+        const px = side === "up" ? points[k].u : points[k].d;
+        if (px != null && px > P_buyLimit + eps) {
+          return { code: "no_buy", netUsd: 0 };
+        }
+      }
+
+      if (maxAbsChainlinkOn && p.absCl != null && p.absCl >= maxClUsd - 1e-12) {
+        continue;
+      }
+
+      buyIdx = i;
+      highBuyLeg = side;
+      break;
     }
-    if (requireMinBidAboveLimit) {
-      if (p.ub == null || p.db == null) continue;
-      if (p.ub <= P_buyLimit + 1e-12 || p.db <= P_buyLimit + 1e-12) continue;
+  } else {
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (p.sec < t0 || p.sec > t1) continue;
+      if (!(p.u <= P_buyLimit || p.d <= P_buyLimit)) continue;
+      if (maxAbsChainlinkOn && p.absCl != null && p.absCl >= maxClUsd - 1e-12) {
+        continue;
+      }
+      if (requireMinBidAboveLimit) {
+        if (p.ub == null || p.db == null) continue;
+        if (p.ub <= P_buyLimit + 1e-12 || p.db <= P_buyLimit + 1e-12) continue;
+      }
+      buyIdx = i;
+      break;
     }
-    buyIdx = i;
-    break;
   }
 
   if (buyIdx < 0) {
     return { code: "no_buy", netUsd: 0 };
   }
   const pBuy = points[buyIdx];
-  const legUp = pBuy.u <= P_buyLimit;
+  const legUp = highBuyMode ? highBuyLeg === "up" : pBuy.u <= P_buyLimit;
   const leg = legUp ? "up" : "down";
   const t_entry = pBuy.sec;
   /** 盈亏按设置的买入限价 / 卖出目标价与份数，不用触发时刻的 mid。 */
@@ -158,21 +208,26 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   /** @type {number | undefined} */
   let exitPrice;
 
+  const eps = 1e-12;
+  /** 止损观察线：买价×(|止损%|/100)。仅看买入腿 mid（买 Up 只看 Up，买 Down 只看 Down），另一侧不参与 */
+  const stopLinePx =
+    stopOn && P_buyLimit > 0 ? P_buyLimit * (Math.abs(lossThr) / 100) : null;
+
   for (let j = buyIdx + 1; j < points.length; j++) {
     const q = points[j];
     if (q.sec > WINDOW_SEC) break;
+    /** 仅已买入侧 mid；与另一侧无关 */
     const px = leg === "up" ? q.u : q.d;
     const bid = leg === "up" ? q.ub : q.db;
     /** 库中买一常为空：止损/差价卖用买一，缺失时回退该侧 mid（与页面「价格」一致，避免误判成全亏未平仓） */
     const ref =
       bid != null && bid > 0 ? bid : px != null && px > 0 && px < 1 ? px : null;
 
-    if (stopOn && ref != null) {
-      const pnlPct = ((ref - P_buyLimit) / P_buyLimit) * 100;
-      if (pnlPct <= lossThr + 1e-12) {
+    if (stopOn && stopLinePx != null && px != null) {
+      if (px < stopLinePx - eps) {
         sellIdx = j;
         exitKind = "stop";
-        exitPrice = ref;
+        exitPrice = ref != null ? ref : px;
         break;
       }
     }
@@ -193,7 +248,10 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   if (sellIdx >= 0 && exitPrice != null) {
     const q = points[sellIdx];
     const t_exit = q.sec;
-    const profit = N * (exitPrice - P_buyLimit);
+    const profit =
+      exitKind === "stop" && stopOn && lossThr != null
+        ? -N * P_buyLimit * (Math.abs(lossThr) / 100)
+        : N * (exitPrice - P_buyLimit);
     return {
       code: "closed",
       netUsd: profit,
@@ -206,7 +264,16 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       exitKind,
     };
   }
-  const floatLoss = P_buyLimit * N;
+  /**
+   * 「窗口末」：买入之后按时间扫完本盘剩余 tick（本 5 分钟市场、sec≤WINDOW_SEC），仍未触发限价/止损/差价平仓，即到序列结束节点。
+   * 若全程未到卖出价等，按模型记为未平仓（全亏语义下风险敞口为 全亏金额 = N×买入限价）。
+   * 勾选高级卖且止损线有效时：记账浮亏 = 全亏金额 × (|止损%|/100)（与 N×限价×|止损%|/100 等价）；否则浮亏仍按全额 全亏金额。
+   */
+  const fullStakeUsd = P_buyLimit * N;
+  const floatLoss =
+    advancedPairSell && stopOn
+      ? fullStakeUsd * (Math.abs(lossThr) / 100)
+      : fullStakeUsd;
   return {
     code: "float",
     netUsd: -floatLoss,

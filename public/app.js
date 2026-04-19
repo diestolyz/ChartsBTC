@@ -1098,11 +1098,11 @@ if (calcPresetDelete) {
 
 /**
  * @param {ReturnType<typeof computeLegPnlFromRows>} r
- * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number }} params
+ * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, advancedPairSell?: boolean, pairLossPctThreshold?: number }} params
  */
 function applySingleCalcResult(r, params) {
   const fmtUsd = fmtUsdCalc;
-  const { t0, t1, P_buyLimit, P_sellTarget, N } = params;
+  const { t0, t1, P_buyLimit, P_sellTarget, N, advancedPairSell, pairLossPctThreshold } = params;
   if (r.code === "no_data") {
     setCalcOutcome("warn", "无数据", "请先加载图表");
     return;
@@ -1112,11 +1112,11 @@ function applySingleCalcResult(r, params) {
     return;
   }
   if (r.code === "no_buy") {
-    setCalcOutcome(
-      "neutral",
-      "未成交 · 盈亏 0 USD",
-      `[${t0}–${t1}]s 内无 Up/Down mid ≤ ${P_buyLimit.toFixed(4)}`,
-    );
+    const hi = P_buyLimit > 0.5 + 1e-12;
+    const detail = hi
+      ? `[${t0}–${t1}]s 内无买点：两侧 mid 自下向上穿入 ${P_buyLimit.toFixed(4)}（含等号）者优先为待买侧；或该侧买点前曾高于限价已否决；或链上过滤未过`
+      : `[${t0}–${t1}]s 内无 Up/Down mid ≤ ${P_buyLimit.toFixed(4)}`;
+    setCalcOutcome("neutral", "未成交 · 盈亏 0 USD", detail);
     return;
   }
   if (r.code === "bad_entry") {
@@ -1128,7 +1128,7 @@ function applySingleCalcResult(r, params) {
     const sign = profit >= 0 ? "+" : "";
     const exitKind = /** @type {{ exitKind?: string }} */ (r).exitKind;
     const exitNote =
-      exitKind === "stop" ? "（止损·买一/mid）" : exitKind === "dump" ? "（BTC差价平仓·买一/mid）" : "";
+      exitKind === "stop" ? "（止损·mid 破线·固定比例）" : exitKind === "dump" ? "（BTC差价平仓·买一/mid）" : "";
     setCalcOutcome(
       profit >= 0 ? "profit" : "loss",
       `${profit >= 0 ? "盈利" : "亏损"} ${sign}${fmtUsd(profit)} USD`,
@@ -1137,10 +1137,17 @@ function applySingleCalcResult(r, params) {
     return;
   }
   if (r.code === "float" && r.floatLoss != null && r.P_entry != null && r.t_entry != null && r.legLabel) {
+    const pctNote =
+      advancedPairSell &&
+      pairLossPctThreshold != null &&
+      pairLossPctThreshold < 0 &&
+      pairLossPctThreshold >= -1000
+        ? ` · 按止损线 ${pairLossPctThreshold}% 计亏`
+        : "";
     setCalcOutcome(
       "loss",
       `浮亏 ${fmtUsd(r.floatLoss)} USD`,
-      `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 未达卖出 (需 ${r.legLabel} ≥ ${P_sellTarget.toFixed(4)}) · ${N} 份`,
+      `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 未达卖出 (需 ${r.legLabel} ≥ ${P_sellTarget.toFixed(4)}) · ${N} 份${pctNote}`,
     );
   }
 }
