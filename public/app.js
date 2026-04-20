@@ -596,6 +596,9 @@ const calcPresetMsg = document.getElementById("calc-preset-msg");
 const calcRequireMinBid = document.getElementById("calc-require-min-bid-above-limit");
 const calcPairBuyMinAbsCl = document.getElementById("calc-pair-buy-min-abs-cl-usd");
 const calcPairBuyMaxAbsCl = document.getElementById("calc-pair-buy-max-abs-cl-usd");
+const calcPairBuyMinPrePeakAbsCl = document.getElementById("calc-pair-buy-min-pre-peak-abs-cl-usd");
+const calcPairBuyBtcRiseWinSec = document.getElementById("calc-pair-buy-btc-rise-window-sec");
+const calcPairBuyBtcRiseMinUsd = document.getElementById("calc-pair-buy-btc-rise-min-usd");
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcClAbsMarketSell = document.getElementById("calc-cl-abs-above-market-sell-usd");
 const calcPairLossPct = document.getElementById("calc-pair-loss-pct-threshold");
@@ -780,6 +783,21 @@ function readLegPairOptsFromForm() {
   if (maxRaw != null && maxRaw > 0) {
     pairBuyMaxAbsChainlinkUsd = Math.min(9_999_999, Math.max(1, Math.floor(maxRaw)));
   }
+  const prePeakRaw = num(calcPairBuyMinPrePeakAbsCl?.value);
+  let pairBuyMinPreEntryPeakAbsChainlinkUsd = 0;
+  if (prePeakRaw != null && prePeakRaw > 0) {
+    pairBuyMinPreEntryPeakAbsChainlinkUsd = Math.min(9_999_999, Math.max(1, Math.floor(prePeakRaw)));
+  }
+  const riseWinForm = num(calcPairBuyBtcRiseWinSec?.value);
+  let pairBuyBtcRiseWindowSec = 0;
+  if (riseWinForm != null && riseWinForm > 0) {
+    pairBuyBtcRiseWindowSec = Math.min(WINDOW_SEC, Math.max(1, Math.floor(riseWinForm)));
+  }
+  const riseUsdForm = num(calcPairBuyBtcRiseMinUsd?.value);
+  let pairBuyBtcRiseMinUsd = 0;
+  if (riseUsdForm != null && riseUsdForm > 0) {
+    pairBuyBtcRiseMinUsd = Math.min(9_999_999, Math.max(1, Math.floor(riseUsdForm)));
+  }
   const dumpRaw = num(calcClAbsMarketSell?.value);
   let pairChainlinkAbsAboveMarketSellUsd = 0;
   if (dumpRaw != null) {
@@ -792,6 +810,9 @@ function readLegPairOptsFromForm() {
     requireMinBidAboveLimit: Boolean(calcRequireMinBid?.checked),
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairBuyMinPreEntryPeakAbsChainlinkUsd,
+    pairBuyBtcRiseWindowSec,
+    pairBuyBtcRiseMinUsd,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairChainlinkAbsAboveMarketSellUsd,
     pairLossPctThreshold,
@@ -850,6 +871,9 @@ function collectCalcParamsForSave() {
     requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairBuyMinPreEntryPeakAbsChainlinkUsd,
+    pairBuyBtcRiseWindowSec,
+    pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairLossPctThreshold,
@@ -863,6 +887,9 @@ function collectCalcParamsForSave() {
     requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairBuyMinPreEntryPeakAbsChainlinkUsd,
+    pairBuyBtcRiseWindowSec,
+    pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairLossPctThreshold,
@@ -901,6 +928,21 @@ function applyCalcPresetParams(params) {
     const v = num(p.pairBuyMaxAbsChainlinkUsd);
     calcPairBuyMaxAbsCl.value =
       v != null && v > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(v)))) : "0";
+  }
+  if (calcPairBuyMinPrePeakAbsCl) {
+    const vp = num(p.pairBuyMinPreEntryPeakAbsChainlinkUsd);
+    calcPairBuyMinPrePeakAbsCl.value =
+      vp != null && vp > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(vp)))) : "0";
+  }
+  if (calcPairBuyBtcRiseWinSec) {
+    const rw = num(p.pairBuyBtcRiseWindowSec);
+    calcPairBuyBtcRiseWinSec.value =
+      rw != null && rw > 0 ? String(Math.min(WINDOW_SEC, Math.max(1, Math.floor(rw)))) : "0";
+  }
+  if (calcPairBuyBtcRiseMinUsd) {
+    const ru = num(p.pairBuyBtcRiseMinUsd);
+    calcPairBuyBtcRiseMinUsd.value =
+      ru != null && ru > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(ru)))) : "0";
   }
   if (calcAdvancedPairSell) {
     calcAdvancedPairSell.checked =
@@ -963,6 +1005,18 @@ function rebuildCalcPresetOptions(filterRaw) {
     } else if (clMax != null && clMax > 0) {
       clBuyS = `CL<${Math.floor(clMax)}`;
     }
+    const prePeak = num(pp.pairBuyMinPreEntryPeakAbsChainlinkUsd);
+    const prePeakS =
+      prePeak != null && prePeak > 0 ? `prePeak≥${Math.floor(prePeak)}` : "";
+    const riseW = num(pp.pairBuyBtcRiseWindowSec);
+    const riseU = num(pp.pairBuyBtcRiseMinUsd);
+    const riseS =
+      riseW != null &&
+      riseW > 0 &&
+      riseU != null &&
+      riseU > 0
+        ? `异动${Math.floor(riseW)}s/+${Math.floor(riseU)}`
+        : "";
     const adv =
       pp.advancedPairSell === true ||
       pp.advancedPairSell === 1 ||
@@ -973,6 +1027,8 @@ function rebuildCalcPresetOptions(filterRaw) {
     const bits = [`${pr.name} — 买 ${pb} · [${t0s},${t1s}]s`];
     if (bidG) bits.push(bidG);
     if (clBuyS) bits.push(clBuyS);
+    if (prePeakS) bits.push(prePeakS);
+    if (riseS) bits.push(riseS);
     if (adv) bits.push(adv);
     o.title = bits.join(" · ");
     calcPresetSelect.appendChild(o);
@@ -1136,8 +1192,8 @@ function applySingleCalcResult(r, params) {
   if (r.code === "no_buy") {
     const hi = P_buyLimit > 0.5 + 1e-12;
     const detail = hi
-      ? `[${t0}–${t1}]s 内无买点：两侧 mid 自下向上穿入 ${P_buyLimit.toFixed(4)}（含等号）者优先为待买侧；或该侧买点前曾高于限价已否决；或链上过滤未过`
-      : `[${t0}–${t1}]s 内无 Up/Down mid ≤ ${P_buyLimit.toFixed(4)}`;
+      ? `[${t0}–${t1}]s 内无买点：两侧 mid 自下向上穿入 ${P_buyLimit.toFixed(4)}（含等号）者优先为待买侧；或该侧买点前曾高于限价已否决；或链上/买点前峰值过滤未过`
+      : `[${t0}–${t1}]s 内无 Up/Down mid ≤ ${P_buyLimit.toFixed(4)}；或未过链上/买点前峰值等过滤`;
     setCalcOutcome("neutral", "未成交 · 盈亏 0 USD", detail);
     return;
   }
@@ -1158,19 +1214,35 @@ function applySingleCalcResult(r, params) {
     );
     return;
   }
-  if (r.code === "float" && r.floatLoss != null && r.P_entry != null && r.t_entry != null && r.legLabel) {
+  if (r.code === "float" && r.P_entry != null && r.t_entry != null && r.legLabel) {
+    const nu = Number(r.netUsd);
+    const hasMtm =
+      r.P_exit != null &&
+      r.t_exit != null &&
+      typeof r.P_exit === "number" &&
+      typeof r.t_exit === "number";
     const pctNote =
+      !hasMtm &&
       advancedPairSell &&
       pairLossPctThreshold != null &&
       pairLossPctThreshold < 0 &&
       pairLossPctThreshold >= -1000
-        ? ` · 按止损线 ${pairLossPctThreshold}% 计亏`
+        ? ` · 按止损线 ${pairLossPctThreshold}% 计亏（无期末 mid 回退）`
         : "";
-    setCalcOutcome(
-      "loss",
-      `浮亏 ${fmtUsd(r.floatLoss)} USD`,
-      `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 未达卖出 (需 ${r.legLabel} ≥ ${P_sellTarget.toFixed(4)}) · ${N} 份${pctNote}`,
-    );
+    const entryNote =
+      Math.abs(r.P_entry - P_buyLimit) > 1e-8
+        ? " · 盈亏按入账价（含异动结束 mid）"
+        : "";
+    const profit = Number.isFinite(nu) ? nu : 0;
+    const kind = profit >= 0 ? "profit" : "loss";
+    const headline =
+      profit >= 0
+        ? `浮盈 ${fmtUsd(profit)} USD`
+        : `浮亏 ${fmtUsd(Math.abs(profit))} USD`;
+    const detail = hasMtm
+      ? `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 期末 mid ${r.P_exit.toFixed(4)} @${r.t_exit.toFixed(1)}s（相对入账价）· ${N} 份 · 未达卖出限价 ${P_sellTarget.toFixed(4)}${entryNote}`
+      : `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 未达卖出 (需 ${r.legLabel} ≥ ${P_sellTarget.toFixed(4)}) · ${N} 份${pctNote}${entryNote}`;
+    setCalcOutcome(kind, headline, detail);
   }
 }
 
@@ -1190,6 +1262,9 @@ async function runLegPairCalculator() {
     requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairBuyMinPreEntryPeakAbsChainlinkUsd,
+    pairBuyBtcRiseWindowSec,
+    pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairLossPctThreshold,
@@ -1198,6 +1273,9 @@ async function runLegPairCalculator() {
     requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairBuyMinPreEntryPeakAbsChainlinkUsd,
+    pairBuyBtcRiseWindowSec,
+    pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairLossPctThreshold,
@@ -1242,6 +1320,9 @@ async function runLegPairCalculator() {
         requireMinBidAboveLimit,
         pairBuyMinAbsChainlinkUsd,
         pairBuyMaxAbsChainlinkUsd,
+        pairBuyMinPreEntryPeakAbsChainlinkUsd,
+        pairBuyBtcRiseWindowSec,
+        pairBuyBtcRiseMinUsd,
         advancedPairSell,
         pairChainlinkAbsAboveMarketSellUsd,
         pairLossPctThreshold,
@@ -1281,7 +1362,7 @@ async function runLegPairCalculator() {
       detailLines.length > CALC_BATCH_DETAIL_MAX_LINES
         ? `\n… 余 ${detailLines.length - CALC_BATCH_DETAIL_MAX_LINES} 条未列出`
         : "";
-    const summaryLine = `共 ${marketCount} 个市场 · 触发买入 ${nBuy} · 已平仓 ${nClosed} · 仅浮亏 ${nFloat} · 其余 ${nSkip}`;
+    const summaryLine = `共 ${marketCount} 个市场 · 触发买入 ${nBuy} · 已平仓 ${nClosed} · 未平仓 ${nFloat} · 其余 ${nSkip}`;
     setCalcBatchSummary(summaryLine);
     setCalcOutcome(
       total >= 0 ? "profit" : "loss",
