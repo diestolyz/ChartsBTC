@@ -45,7 +45,7 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
  * @property {number} [pairBuyBtcRiseMinUsd] — 见 `pairBuyBtcRiseWindowSec`；美元涨幅下界；0 关闭
  * @property {boolean} [advancedPairSell] — 为真时启用 `pairLossPctThreshold` 止损与 `pairChainlinkAbsAboveMarketSellUsd` 差价市价卖（参考买一）
  * @property {number} [pairChainlinkAbsAboveMarketSellUsd] — 买入后 |现货−开盘| **首次严格大于**该美元值即在该 tick 按参考价（买一，缺则用 mid）平仓；至窗口末从未超过则全亏；0 关闭
- * @property {number} [pairLossPctThreshold] — 负数 %；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down），若曾低于 买价×(|阈值|/100) 则记止损亏损，亏损额 = 买价×(|阈值|/100)×份数；若至序列结束未触发则浮亏仍按同比例或全额（见实现）。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现破止损，则按**首次破止损**计，不按限价止盈盈利。
+ * @property {number} [pairLossPctThreshold] — 负数 %（相对入账价的跌幅）；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down）。止损价 **P_stop = P_entry×(1+阈值/100)**（例：−20 → 0.8×入账价）；若曾 **≤ P_stop** 则记止损亏损，亏损额 = 买价×(|阈值|/100)×份数；若至序列结束未触发则浮亏仍按同比例或全额（见实现）。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现破止损，则按**首次破止损**计，不按限价止盈盈利。
  */
 
 /**
@@ -335,9 +335,9 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   let exitPrice;
 
   const eps = 1e-12;
-  /** 止损观察线：买价×(|止损%|/100)。仅看买入腿 mid（买 Up 只看 Up，买 Down 只看 Down），另一侧不参与 */
+  /** 止损价：入账价×(1+止损%/100)，与 BTC5Mins `pairLimitStrategyCore` 市价止损线一致。仅看买入腿 mid */
   const stopLinePx =
-    stopOn && P_entry > 0 ? P_entry * (Math.abs(lossThr) / 100) : null;
+    stopOn && P_entry > 0 ? P_entry * (1 + lossThr / 100) : null;
 
   /** 各自首次触发的 tick 索引（整窗扫描，用于「先止盈后仍破止损」等回看） */
   let firstStopJ = -1;
@@ -354,7 +354,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     const ref =
       bid != null && bid > 0 ? bid : px != null && px > 0 && px < 1 ? px : null;
 
-    if (stopOn && stopLinePx != null && px != null && px < stopLinePx - eps) {
+    if (stopOn && stopLinePx != null && px != null && px <= stopLinePx + eps) {
       if (firstStopJ < 0) firstStopJ = j;
     }
     if (px != null && px >= P_sellTarget) {
