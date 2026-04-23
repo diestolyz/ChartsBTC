@@ -21,6 +21,7 @@ const slugLabel = document.getElementById("slug-label");
 const liveUp = document.getElementById("live-up");
 const liveDown = document.getElementById("live-down");
 const liveBtc = document.getElementById("live-btc");
+const liveBtcOpen = document.getElementById("live-btc-open");
 const connLabel = document.getElementById("conn-label");
 
 /** @type {string | null} */
@@ -195,6 +196,13 @@ function formatUsdDelta(delta) {
   );
 }
 
+function formatUsdPrice(px) {
+  return px.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 /**
  * @param {unknown[]} rows
  * @param {boolean} fromArchive - 用该盘首条记录的 btc 作开盘近似（服务端按时间升序返回）
@@ -213,6 +221,11 @@ function applyRows(rows, fromArchive = false, marketSlug = null) {
     } else {
       open = null;
     }
+  }
+
+  if (liveBtcOpen) {
+    liveBtcOpen.textContent =
+      open != null && Number.isFinite(open) ? formatUsdPrice(open) : "—";
   }
 
   for (const r of rows) {
@@ -398,6 +411,12 @@ function applyHealthPayload(j) {
   const a = j.active && typeof j.active === "object" ? j.active : null;
   chainlinkOpenUsd = j.btcOpenUsd != null ? num(j.btcOpenUsd) : null;
   lastHealthJson = j;
+  if (liveBtcOpen && !chartSlugOverride) {
+    liveBtcOpen.textContent =
+      chainlinkOpenUsd != null && Number.isFinite(chainlinkOpenUsd)
+        ? formatUsdPrice(chainlinkOpenUsd)
+        : "—";
+  }
   if (a && "slug" in a && a.slug) {
     const slug = String(a.slug);
     if (slug !== prevSlug) {
