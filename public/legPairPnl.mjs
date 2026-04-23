@@ -52,7 +52,7 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
  * @param {unknown[]} rows
  * @param {string | null} slug
  * @param {LegPairPnlOpts} [opts]
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "dump" }} P_entry 为买入价（未开异动时为买入限价；开异动时为异动结束当刻已买侧 mid）。`closed` 时 P_exit 为平仓价。`float` 时若有期末 mid：netUsd = N×(期末 mid−P_entry)（可正可负），并返回 P_exit/t_exit 为期末观测；否则回退为原全亏/比例亏且 netUsd 为负、仅此时带 floatLoss。
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "dump" }} P_entry 为买入价（未开异动时为买入限价；开异动时为异动结束当刻已买侧 mid）。`closed` 时 P_exit 为平仓价。`float`：勾选 `advancedPairSell` 且有有效期末 mid 时 netUsd = N×(期末 mid−P_entry)（盯市）；未勾选高级卖时未平仓一律 netUsd = −N×P_entry（全额入账亏）；勾选但无期末 mid 时回退 −N×P_entry 或 −N×P_entry×|止损%|/100，仅此时带 floatLoss。
  */
 /**
  * 买点索引之前（不含买点）各 tick 上已算好的 |现货−开盘| 峰值。
@@ -430,21 +430,25 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     };
   }
   /**
-   * 「窗口末」未触发限价/止损/差价平仓：优先按**最后一个有效已买侧 mid**（自买点起至 sec≤WINDOW_SEC）相对 P_entry 计浮动盈亏 netUsd = N×(期末 mid−P_entry)，可浮盈可浮亏；P_entry 含异动结束 mid。
-   * 若无有效期末 mid，回退为原模型：全亏金额 N×P_entry（高级卖+止损线时 ×|止损%|/100），netUsd 为负，并填 floatLoss。
+   * 「窗口末」未触发限价/止损/差价平仓：
+   * - 勾选 `advancedPairSell` 时：若有有效期末已买侧 mid，按盯市 netUsd = N×(期末 mid−P_entry)，可浮盈可浮亏，并返回 P_exit/t_exit。
+   * - 未勾选高级卖：不按期末 mid 折算，一律按全额入账亏 netUsd = −N×P_entry（与「仅基础+限价卖出」直觉一致）。
+   * - 勾选高级卖但无有效期末 mid：回退全亏 N×P_entry（若同时启用止损线则 ×|止损%|/100），netUsd 为负，并填 floatLoss。
    */
   let pxEnd = /** @type {number | null} */ (null);
   let tEnd = /** @type {number | null} */ (null);
-  for (let j = buyIdx; j < points.length; j++) {
-    const q = points[j];
-    if (q.sec > WINDOW_SEC) break;
-    const px = leg === "up" ? q.u : q.d;
-    if (px != null && px > 0 && px < 1 - eps) {
-      pxEnd = px;
-      tEnd = q.sec;
+  if (advancedPairSell) {
+    for (let j = buyIdx; j < points.length; j++) {
+      const q = points[j];
+      if (q.sec > WINDOW_SEC) break;
+      const px = leg === "up" ? q.u : q.d;
+      if (px != null && px > 0 && px < 1 - eps) {
+        pxEnd = px;
+        tEnd = q.sec;
+      }
     }
   }
-  if (pxEnd != null && tEnd != null) {
+  if (advancedPairSell && pxEnd != null && tEnd != null) {
     const netUsdFloat = N * (pxEnd - P_entry);
     return {
       code: "float",

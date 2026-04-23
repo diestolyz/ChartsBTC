@@ -74,7 +74,7 @@
         <h2
           id="pair-calculator-title"
           class="pair-calculator__title"
-          aria-label="单侧盈亏测算。起始与结束均为距本盘开盘的秒数（与 slug 窗口起点对齐），对应交易端买入时间 N1–N2。买入限价 ≤0.5：在 [起始,结束] 秒内找首次 Up mid ≤ 买入限价或 Down mid ≤ 买入限价（若均满足则优先 Up），并满足（若开启）买一与 Chainlink 约束。买入限价 &gt;0.5：在 [起始,结束] 秒内同时监控 Up mid 与 Down mid，看谁先自下向上穿入买入限价（相邻 tick：前 ≤ 限价、当前 ≥ 限价，含等号；同一时刻两侧皆穿入则优先 Up）。定待买侧后，若该侧在买点之前（自本盘第一条数据起）曾有 mid 严格高于买入限价，则未买入；否则在该 tick 买入该侧。卖出仍为同一侧 mid ≥ 卖出价格按卖出价格结算。若勾选「启用止损 + BTC 差价平仓」：顺序为 止损 → 限价 mid → BTC 差价平仓；止损为买入后仅看买入那一侧 mid（买 Up 只看 Up）是否曾低于或等于 入账价×(1+止损%÷100)（负数为相对跌幅，与 BTC5Mins 一致）；BTC 差价平仓为买入后首次 |现货−开盘| 严格大于卖出阈值即在该时刻以买一（无则用 mid）结算。入账价：未开异动时为买入限价；开启异动链上条件时为异动结束当刻已买侧 mid。若买入后直至本盘 5 分钟数据序列结束仍未平仓：通常按期末已买侧 mid 相对入账价计浮动盈亏（可浮盈或浮亏）；无有效期末 mid 时回退为 入账价×份数 或 (入账价×份数)×(|止损%|/100)。平仓时美元盈亏为 (结算价 − 入账价) × 份数。不计手续费与滑点。"
+          aria-label="单侧盈亏测算。起始与结束均为距本盘开盘的秒数（与 slug 窗口起点对齐），对应交易端买入时间 N1–N2。买入限价 ≤0.5：在 [起始,结束] 秒内找首次 Up mid ≤ 买入限价或 Down mid ≤ 买入限价（若均满足则优先 Up），并满足（若开启）买一与 Chainlink 约束。买入限价 &gt;0.5：在 [起始,结束] 秒内同时监控 Up mid 与 Down mid，看谁先自下向上穿入买入限价（相邻 tick：前 ≤ 限价、当前 ≥ 限价，含等号；同一时刻两侧皆穿入则优先 Up）。定待买侧后，若该侧在买点之前（自本盘第一条数据起）曾有 mid 严格高于买入限价，则未买入；否则在该 tick 买入该侧。卖出仍为同一侧 mid ≥ 卖出价格按卖出价格结算。若勾选「启用止损 + BTC 差价平仓」：顺序为 止损 → 限价 mid → BTC 差价平仓；止损为买入后仅看买入那一侧 mid（买 Up 只看 Up）是否曾低于或等于 入账价×(1+止损%÷100)（负数为相对跌幅，与 BTC5Mins 一致）；BTC 差价平仓为买入后首次 |现货−开盘| 严格大于卖出阈值即在该时刻以买一（无则用 mid）结算。入账价：未开异动时为买入限价；开启异动链上条件时为异动结束当刻已买侧 mid。若买入后直至本盘 5 分钟数据序列结束仍未平仓：未勾选「启用止损+…」时按 −入账价×份数（全额入账亏）；勾选时一般按期末已买侧 mid 相对入账价计浮动盈亏（可浮盈或浮亏），无有效期末 mid 时回退为 入账价×份数 或 (入账价×份数)×(|止损%|/100)。平仓时美元盈亏为 (结算价 − 入账价) × 份数。不计手续费与滑点。"
         >
           单侧盈亏测算
         </h2>
@@ -293,11 +293,20 @@
             <span class="calc-full-batch__ui" aria-hidden="true"></span>
             <span class="calc-full-batch__label">计算全量</span>
           </label>
+          <button
+            type="button"
+            class="btn btn--ghost"
+            id="calc-export-raw"
+            disabled
+            title="最近一次「计算全量」成功且存在平仓或未平仓盘后可用；下载 Excel（.xlsx），含各盘精确到秒的 tick"
+          >
+            导出 Excel
+          </button>
         </div>
         <p class="pair-calculator__batch-hint muted">
           开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐<strong>最近 N 个</strong>5
-          分钟市场的盘口序列（<strong>N = 页头「时间跨度」数值</strong>，与时段下拉一致），<strong>触发与结算规则</strong>与本节「基础」「对价扩展」一致；汇总<strong>累计盈亏</strong>（已买入但至该盘序列结束仍未平仓：一般按<strong>期末已买侧 mid 相对入账价</strong>计浮动盈亏，入账价未开异动时为买入限价、开异动时为异动结束 mid，可浮盈或浮亏；仅当缺少有效期末 mid 时回退为
-          <strong>−入账价×份数</strong>或勾选「启用止损+…」且填止损线时的 <strong>−(入账价×份数)×|止损%|/100</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
+          分钟市场的盘口序列（<strong>N = 页头「时间跨度」数值</strong>，与时段下拉一致），<strong>触发与结算规则</strong>与本节「基础」「对价扩展」一致；汇总<strong>累计盈亏</strong>（已买入但至该盘序列结束仍未平仓：<strong>未勾选「启用止损+…」</strong>时为 <strong>−入账价×份数</strong>；<strong>勾选后</strong>一般按期末已买侧 mid 相对入账价计浮动盈亏；仅当勾选且缺少有效期末 mid 时回退为
+          <strong>−入账价×份数</strong>或同时填止损线时的 <strong>−(入账价×份数)×|止损%|/100</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
         </p>
         <div id="calc-verdict" class="pair-calculator__verdict mono" aria-live="polite"></div>
         <h3 class="pair-calculator__batch-chart-title">全量盈亏分布</h3>
@@ -327,6 +336,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

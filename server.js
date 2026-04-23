@@ -942,6 +942,52 @@ function groupTicksBySlug(rows) {
   return m;
 }
 
+/** JSON 安全数值（含 mysql2 BigInt） */
+function jsonSafeFiniteNum(v) {
+  if (v == null || v === "") return null;
+  if (typeof v === "bigint") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 全量测算导出用：单行 tick 纯 JSON 对象（无 BigInt）。
+ * @param {unknown} row
+ */
+function serializeTickRowForCalcBatchExport(row) {
+  if (!row || typeof row !== "object") return null;
+  const r = /** @type {Record<string, unknown>} */ (row);
+  const ts_ms = jsonSafeFiniteNum(r.ts_ms);
+  if (ts_ms == null) return null;
+  return {
+    ts_ms,
+    up_bid: jsonSafeFiniteNum(r.up_bid),
+    up_ask: jsonSafeFiniteNum(r.up_ask),
+    up_mid: jsonSafeFiniteNum(r.up_mid),
+    down_bid: jsonSafeFiniteNum(r.down_bid),
+    down_ask: jsonSafeFiniteNum(r.down_ask),
+    down_mid: jsonSafeFiniteNum(r.down_mid),
+    btc_usd: jsonSafeFiniteNum(r.btc_usd),
+  };
+}
+
+/**
+ * @param {unknown[]} rows
+ * @returns {Record<string, number | null>[]}
+ */
+function serializeTicksForCalcBatchExport(rows) {
+  const out = [];
+  if (!Array.isArray(rows)) return out;
+  for (const row of rows) {
+    const o = serializeTickRowForCalcBatchExport(row);
+    if (o) out.push(o);
+  }
+  return out;
+}
+
 /**
  * 单侧盈亏「全量」：一次拉齐 windows + 各盘 ticks，服务端套用与前端相同的 `computeLegPnlFromRows`。
  */
@@ -1045,14 +1091,19 @@ api.post("/calc-batch", async (req, res) => {
           nFloat += 1;
         }
         const tag = pnlDetailTag(r.code);
-        details.push({
+        /** @type {Record<string, unknown>} */
+        const one = {
           slug,
           startMs,
           timeRange,
           tag,
           netUsd: r.netUsd,
           code: r.code,
-        });
+        };
+        if (r.code === "closed" || r.code === "float") {
+          one.ticks = serializeTicksForCalcBatchExport(ticks);
+        }
+        details.push(one);
       } catch (e) {
         nSkip += 1;
         details.push({

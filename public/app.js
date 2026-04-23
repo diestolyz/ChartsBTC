@@ -585,6 +585,7 @@ const calcSubmit = document.getElementById("calc-submit");
 const calcResult = document.getElementById("calc-result");
 const calcVerdict = document.getElementById("calc-verdict");
 const calcFullBatch = document.getElementById("calc-full-batch");
+const calcExportRaw = document.getElementById("calc-export-raw");
 const calcBatchCanvas = document.getElementById("calc-batch-chart");
 const calcBatchSummary = document.getElementById("calc-batch-summary");
 const calcPresetFilter = document.getElementById("calc-preset-filter");
@@ -617,6 +618,129 @@ function setCalcBatchSummary(text) {
 
 /** @type {any} */
 let calcBatchChart = null;
+
+/**
+ * 最近一次成功的「计算全量」响应中可用于导出的明细（含 closed/float 的 ticks）。
+ * @type {{ details: unknown[] } | null}
+ */
+let lastCalcBatchForExport = null;
+
+function setCalcExportRawEnabled(on) {
+  if (calcExportRaw) calcExportRaw.disabled = !on;
+}
+
+/** @param {number} tsMs */
+function formatLocalDateTimeToSecond(tsMs) {
+  if (!Number.isFinite(tsMs)) return "";
+  return new Date(tsMs).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+/** @param {unknown} v */
+function exportSheetNum(v) {
+  const n = num(/** @type {any} */ (v));
+  return n != null ? n : "";
+}
+
+function calcBatchExportFilename() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const h = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return `btc5m-calc-raw_${y}${mo}${day}_${h}${mi}${s}.xlsx`;
+}
+
+/**
+ * 将最近一次全量明细导出为 Excel（需页面已加载 `xlsx.full.min.js`）。
+ * @param {{ details: unknown[] }} payload
+ * @returns {boolean}
+ */
+function exportCalcBatchToXlsx(payload) {
+  const XLSX = /** @type {any} */ (globalThis).XLSX;
+  if (!XLSX?.utils?.book_new || typeof XLSX.writeFile !== "function") {
+    window.alert("导出 Excel 失败：未加载表格组件。请刷新页面或检查网络后重试。");
+    return false;
+  }
+  const details = Array.isArray(payload?.details) ? payload.details : [];
+  const blocks = details.filter((d) => {
+    if (!d || typeof d !== "object") return false;
+    const c = /** @type {{ code?: unknown }} */ (d).code;
+    return c === "closed" || c === "float";
+  });
+
+  const wb = XLSX.utils.book_new();
+  const metaRows = [
+    ["导出说明", "单侧测算「计算全量」原始盘口（仅 平仓 / 未平仓；不含 未买 等）"],
+    ["导出时间（本地，精确到秒）", formatLocalDateTimeToSecond(Date.now())],
+  ];
+  if (!blocks.length) {
+    metaRows.push(["提示", "无常平仓或未平仓市场（盘口明细表为空）"]);
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(metaRows), "说明");
+
+  const header = [
+    "slug",
+    "timeRange",
+    "状态",
+    "该盘盈亏USD",
+    "本地时间(精确到秒)",
+    "距开盘秒",
+    "ts_ms",
+    "up_bid",
+    "up_ask",
+    "up_mid",
+    "down_bid",
+    "down_ask",
+    "down_mid",
+    "btc_usd",
+  ];
+  const aoa = [header];
+  for (const d of blocks) {
+    const o = /** @type {Record<string, unknown>} */ (d);
+    const slug = o.slug != null ? String(o.slug) : "";
+    const timeRange = o.timeRange != null ? String(o.timeRange) : "—";
+    const tag = o.tag != null ? String(o.tag) : "";
+    const nu = Number(o.netUsd);
+    const netUsdCell = Number.isFinite(nu) ? nu : "";
+    const ticks = Array.isArray(o.ticks) ? o.ticks : [];
+    for (const t of ticks) {
+      if (!t || typeof t !== "object") continue;
+      const tr = /** @type {Record<string, unknown>} */ (t);
+      const tsMs = num(tr.ts_ms);
+      if (tsMs == null) continue;
+      const sec = secondsFromWindowOpen(tsMs, slug || null, ticks);
+      aoa.push([
+        slug,
+        timeRange,
+        tag,
+        netUsdCell,
+        formatLocalDateTimeToSecond(tsMs),
+        exportSheetNum(sec),
+        tsMs,
+        exportSheetNum(tr.up_bid),
+        exportSheetNum(tr.up_ask),
+        exportSheetNum(tr.up_mid),
+        exportSheetNum(tr.down_bid),
+        exportSheetNum(tr.down_ask),
+        exportSheetNum(tr.down_mid),
+        exportSheetNum(tr.btc_usd),
+      ]);
+    }
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "盘口明细");
+  XLSX.writeFile(wb, calcBatchExportFilename());
+  return true;
+}
 
 /** 全量盈亏图：X 轴与 tooltip 用本地 24 小时制 */
 function formatBatchChartDateTime(ms, withSeconds) {
@@ -1284,6 +1408,8 @@ async function runLegPairCalculator() {
   if (!calcFullBatch?.checked) {
     destroyCalcBatchChart();
     setCalcBatchSummary("");
+    lastCalcBatchForExport = null;
+    setCalcExportRawEnabled(false);
     const slug = getCalcMarketSlug();
     const rows = tickBuffer;
     if (!rows.length) {
@@ -1298,6 +1424,8 @@ async function runLegPairCalculator() {
   if (calcSubmit) calcSubmit.disabled = true;
   destroyCalcBatchChart();
   setCalcBatchSummary("");
+  lastCalcBatchForExport = null;
+  setCalcExportRawEnabled(false);
   setCalcOutcome("neutral", "全量计算中…", "");
   try {
     const tickLimit = Math.min(
@@ -1343,6 +1471,8 @@ async function runLegPairCalculator() {
     const details = Array.isArray(batchJ.details) ? batchJ.details : [];
     if (!marketCount) {
       setCalcBatchSummary("");
+      lastCalcBatchForExport = null;
+      setCalcExportRawEnabled(false);
       setCalcOutcome("warn", "无归档市场", "");
       return;
     }
@@ -1369,10 +1499,14 @@ async function runLegPairCalculator() {
       `累计盈亏 ${sign}${fmtUsdCalc(total)} USD`,
       detailShown.join("\n") + detailOverflow,
     );
+    lastCalcBatchForExport = { details };
+    setCalcExportRawEnabled(marketCount > 0 && nClosed + nFloat > 0);
     updateCalcBatchChart(details);
   } catch (e) {
     destroyCalcBatchChart();
     setCalcBatchSummary("");
+    lastCalcBatchForExport = null;
+    setCalcExportRawEnabled(false);
     setCalcOutcome("warn", "全量失败", e instanceof Error ? e.message : String(e));
   } finally {
     if (calcSubmit) calcSubmit.disabled = false;
@@ -1382,6 +1516,13 @@ async function runLegPairCalculator() {
 if (calcSubmit) {
   calcSubmit.addEventListener("click", () => {
     runLegPairCalculator();
+  });
+}
+
+if (calcExportRaw) {
+  calcExportRaw.addEventListener("click", () => {
+    if (!lastCalcBatchForExport) return;
+    exportCalcBatchToXlsx(lastCalcBatchForExport);
   });
 }
 
