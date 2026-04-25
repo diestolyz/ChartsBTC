@@ -37,7 +37,7 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
 /**
  * 与 BTC5Mins `pair-limit-params` 对齐的可选约束（未传或默认时与旧版行为一致：仅 mid 触发 + 限价卖出）。
  * @typedef {object} LegPairPnlOpts
- * @property {boolean} [requireMinBidAboveLimit] — 仅 **买价 ≤0.5** 时生效：N1(=t0) 前 Up/Down 买一最小值及买入当刻两买一均须严格大于买入限价
+ * @property {boolean} [requireMinBidAboveLimit] — 勾选时：N1(=起始秒 t0) 当刻 |现货−开盘|（取首个 `sec≥t0` 的 tick，与下方 `absCl` 一致）须 **严格大于** 触发买点当刻的 |现货−开盘|；否则计未买入。买价高/低模式均适用
  * @property {number} [pairBuyMinAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| ≥ 该值（美元）的 tick 上允许触发买；无有效 btc 差价数据则不触发；0 关闭
  * @property {number} [pairBuyMaxAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| 严格小于该值（美元）的 tick 上允许触发买；0 关闭上界
  * @property {number} [pairBuyMinPreEntryPeakAbsChainlinkUsd] — >0 时：自本盘首条数据起至买点 tick 之前，|现货−开盘| 的历史最大值须 ≥ 该值（美元）；否则该候选买点无效并继续向后找；无有效差价参与峰值的 tick 则该候选不通过；0 关闭
@@ -189,25 +189,6 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
 
   const highBuyMode = P_buyLimit > 0.5 + 1e-12;
 
-  if (requireMinBidAboveLimit && t0 > 0 && !highBuyMode) {
-    let minUb = null;
-    let minDb = null;
-    for (const p of points) {
-      if (p.sec >= t0) break;
-      if (p.ub == null || p.db == null) {
-        return { code: "no_buy", netUsd: 0 };
-      }
-      minUb = minUb == null ? p.ub : Math.min(minUb, p.ub);
-      minDb = minDb == null ? p.db : Math.min(minDb, p.db);
-    }
-    if (minUb == null || minDb == null) {
-      return { code: "no_buy", netUsd: 0 };
-    }
-    if (minUb <= P_buyLimit + 1e-12 || minDb <= P_buyLimit + 1e-12) {
-      return { code: "no_buy", netUsd: 0 };
-    }
-  }
-
   let buyIdx = -1;
   /** 买价 &gt;0.5 时由下方循环写入：'up' | 'down' */
   let highBuyLeg = /** @type {"up" | "down" | null} */ (null);
@@ -289,10 +270,6 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       ) {
         continue;
       }
-      if (requireMinBidAboveLimit) {
-        if (p.ub == null || p.db == null) continue;
-        if (p.ub <= P_buyLimit + 1e-12 || p.db <= P_buyLimit + 1e-12) continue;
-      }
       buyIdx = i;
       break;
     }
@@ -300,6 +277,19 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
 
   if (buyIdx < 0) {
     return { code: "no_buy", netUsd: 0 };
+  }
+  if (requireMinBidAboveLimit) {
+    const epsCl = 1e-12;
+    let absClN1 = /** @type {number | null} */ (null);
+    for (const p of points) {
+      if (p.sec < t0 - epsCl) continue;
+      absClN1 = p.absCl;
+      break;
+    }
+    const absClBuy = points[buyIdx].absCl;
+    if (absClN1 == null || absClBuy == null || absClN1 <= absClBuy + epsCl) {
+      return { code: "no_buy", netUsd: 0 };
+    }
   }
   const pBuy = points[buyIdx];
   const legUp = highBuyMode ? highBuyLeg === "up" : pBuy.u <= P_buyLimit;

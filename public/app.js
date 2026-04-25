@@ -1136,7 +1136,7 @@ function rebuildCalcPresetOptions(filterRaw) {
       pp.requireMinBidAboveLimit === 1 ||
       pp.requireMinBidAboveLimit === "1" ||
       pp.requireMinBidAboveLimit === "true"
-        ? "买一 guard"
+        ? "N1Δ>买点"
         : "";
     const clMin = num(pp.pairBuyMinAbsChainlinkUsd);
     const clMax = num(pp.pairBuyMaxAbsChainlinkUsd);
