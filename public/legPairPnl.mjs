@@ -46,6 +46,7 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
  * @property {boolean} [advancedPairSell] — 为真时启用 `pairStopPriceUsd` 止损与 `pairChainlinkAbsAboveMarketSellUsd` 差价市价卖（参考买一）
  * @property {number} [pairChainlinkAbsAboveMarketSellUsd] — 买入后 |现货−开盘| **首次严格大于**该美元值即在该 tick 按参考价（买一，缺则用 mid）平仓；至窗口末从未超过则全亏；0 关闭
  * @property {number} [pairStopPriceUsd] — 止损绝对价格（USD，0~1）；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down）。若曾 **≤ P_stop(=本字段)** 则记止损平仓，并按该止损价结算：盈亏 = (P_stop − P_entry)×份数。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现破止损，则按**首次破止损**计，不按限价止盈盈利。
+ * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  */
 
 /**
@@ -151,6 +152,10 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const stopPx =
     advancedPairSell && stopRaw != null && stopRaw > 0 && stopRaw < 1 ? stopRaw : null;
   const stopOn = stopPx != null;
+
+  const fixedLossRaw = num(opts.pairFixedLossUsd);
+  const fixedLossUsd =
+    fixedLossRaw != null && fixedLossRaw > 0 ? Math.max(0, Math.min(9_999_999, fixedLossRaw)) : 0;
 
   /** 窗口内首条非空 Chainlink 现货，作「开盘」参考（避免首 tick 无 btc 导致全程无差价） */
   let openBtc = null;
@@ -402,10 +407,11 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   if (sellIdx >= 0 && exitPrice != null) {
     const q = points[sellIdx];
     const t_exit = q.sec;
-    const profit =
+    let profit =
       exitKind === "stop" && stopOn && stopPx != null
         ? N * (stopPx - P_entry)
         : N * (exitPrice - P_entry);
+    if (fixedLossUsd > 0 && profit < 0) profit = -fixedLossUsd;
     return {
       code: "closed",
       netUsd: profit,
@@ -439,9 +445,15 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     }
   }
   if (pxEnd != null && tEnd != null) {
-    const settlePx =
-      pxEnd > 0.5 + eps ? 1 : pxEnd < 0.5 - eps ? 0 : 0.5;
-    const netUsdFloat = N * (settlePx - P_entry);
+    const settlePx = pxEnd > 0.5 + eps ? 1 : pxEnd < 0.5 - eps ? 0 : 0.5;
+    const netUsdFloat =
+      fixedLossUsd > 0
+        ? pxEnd > 0.5 + eps
+          ? N * (1 - P_entry) // >0.5：视为结算到 1（全盈利）
+          : pxEnd < 0.5 - eps
+            ? -fixedLossUsd // <0.5：固定亏损金额
+            : N * (0.5 - P_entry) // ==0.5：仍按 0.5 盯市
+        : N * (settlePx - P_entry);
     return {
       code: "float",
       netUsd: netUsdFloat,
@@ -451,10 +463,14 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       P_exit: pxEnd,
       t_entry,
       t_exit: tEnd,
+      ...(fixedLossUsd > 0 && pxEnd < 0.5 - eps ? { floatLoss: fixedLossUsd } : {}),
     };
   }
   const fullStakeUsd = P_entry * N;
   const floatLoss =
+    fixedLossUsd > 0
+      ? fixedLossUsd
+      : 
     advancedPairSell && stopOn && stopPx != null
       ? Math.max(0, (P_entry - stopPx) * N)
       : fullStakeUsd;

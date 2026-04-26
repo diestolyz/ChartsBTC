@@ -622,6 +622,7 @@ const calcPairBuyBtcRiseMinUsd = document.getElementById("calc-pair-buy-btc-rise
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcClAbsMarketSell = document.getElementById("calc-cl-abs-above-market-sell-usd");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
+const calcPairFixedLossUsd = document.getElementById("calc-pair-fixed-loss-usd");
 
 function setCalcBatchSummary(text) {
   if (!calcBatchSummary) return;
@@ -952,6 +953,11 @@ function readLegPairOptsFromForm() {
     pairStopPriceUsd = Math.max(0, Math.min(1, stopForm));
     if (pairStopPriceUsd >= 1) pairStopPriceUsd = 0.999999;
   }
+  const fixedLossForm = num(calcPairFixedLossUsd?.value);
+  let pairFixedLossUsd = 0;
+  if (fixedLossForm != null && fixedLossForm > 0) {
+    pairFixedLossUsd = Math.max(0, Math.min(9_999_999, fixedLossForm));
+  }
   return {
     requireMinBidAboveLimit: Boolean(calcRequireMinBid?.checked),
     pairBuyMinAbsChainlinkUsd,
@@ -962,6 +968,7 @@ function readLegPairOptsFromForm() {
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
+    pairFixedLossUsd,
   };
 }
 
@@ -1023,6 +1030,7 @@ function collectCalcParamsForSave() {
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
+    pairFixedLossUsd,
   } = p;
   return {
     P_buyLimit,
@@ -1039,6 +1047,7 @@ function collectCalcParamsForSave() {
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
+    pairFixedLossUsd,
     fullBatch: Boolean(calcFullBatch?.checked),
   };
 }
@@ -1106,6 +1115,11 @@ function applyCalcPresetParams(params) {
     const s = num(p.pairStopPriceUsd);
     const v = s != null && s > 0 ? Math.max(0, Math.min(1, s)) : 0;
     calcPairStopPriceUsd.value = v > 0 ? String(v) : "0";
+  }
+  if (calcPairFixedLossUsd) {
+    const fl = num(p.pairFixedLossUsd);
+    const v = fl != null && fl > 0 ? Math.max(0, Math.min(9_999_999, fl)) : 0;
+    calcPairFixedLossUsd.value = v > 0 ? String(v) : "0";
   }
 }
 
@@ -1322,11 +1336,11 @@ if (calcPresetDelete) {
 
 /**
  * @param {ReturnType<typeof computeLegPnlFromRows>} r
- * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, advancedPairSell?: boolean, pairStopPriceUsd?: number }} params
+ * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, advancedPairSell?: boolean, pairStopPriceUsd?: number, pairFixedLossUsd?: number }} params
  */
 function applySingleCalcResult(r, params) {
   const fmtUsd = fmtUsdCalc;
-  const { t0, t1, P_buyLimit, P_sellTarget, N, advancedPairSell, pairStopPriceUsd } = params;
+  const { t0, t1, P_buyLimit, P_sellTarget, N, advancedPairSell, pairStopPriceUsd, pairFixedLossUsd } = params;
   if (r.code === "no_data") {
     setCalcOutcome("warn", "无数据", "请先加载图表");
     return;
@@ -1370,6 +1384,10 @@ function applySingleCalcResult(r, params) {
     const pctNote =
       !hasMtm &&
       advancedPairSell &&
+      pairFixedLossUsd != null &&
+      pairFixedLossUsd > 0
+        ? ` · 固定亏损 ${fmtUsd(pairFixedLossUsd)}（浮亏固定）`
+        : advancedPairSell &&
       pairStopPriceUsd != null &&
       pairStopPriceUsd > 0 &&
       pairStopPriceUsd < 1
@@ -1414,6 +1432,7 @@ async function runLegPairCalculator() {
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
+    pairFixedLossUsd,
   } = params;
   const calcOpts = {
     requireMinBidAboveLimit,
@@ -1425,6 +1444,7 @@ async function runLegPairCalculator() {
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
+    pairFixedLossUsd,
   };
 
   if (!calcFullBatch?.checked) {
@@ -1476,6 +1496,7 @@ async function runLegPairCalculator() {
         advancedPairSell,
         pairChainlinkAbsAboveMarketSellUsd,
         pairStopPriceUsd,
+        pairFixedLossUsd,
       }),
     });
     const batchJ = await batchRes.json().catch(() => ({}));

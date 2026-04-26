@@ -1166,7 +1166,7 @@ api.get("/market-windows", async (req, res) => {
 
 /**
  * @param {unknown} raw
- * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, requireMinBidAboveLimit: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairBuyMinPreEntryPeakAbsChainlinkUsd: number, pairBuyBtcRiseWindowSec: number, pairBuyBtcRiseMinUsd: number, advancedPairSell: boolean, pairChainlinkAbsAboveMarketSellUsd: number, pairStopPriceUsd: number } | null}
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, requireMinBidAboveLimit: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairBuyMinPreEntryPeakAbsChainlinkUsd: number, pairBuyBtcRiseWindowSec: number, pairBuyBtcRiseMinUsd: number, advancedPairSell: boolean, pairChainlinkAbsAboveMarketSellUsd: number, pairStopPriceUsd: number, pairFixedLossUsd: number } | null}
  */
 function normalizeCalcPresetParams(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -1235,6 +1235,9 @@ function normalizeLegPairOpts(raw) {
   if (stop == null || stop <= 0) stop = 0;
   stop = Math.max(0, Math.min(1, stop));
   if (stop >= 1) stop = 0.999999;
+  let fixedLoss = num(o.pairFixedLossUsd);
+  if (fixedLoss == null || fixedLoss <= 0) fixedLoss = 0;
+  fixedLoss = Math.max(0, Math.min(9_999_999, fixedLoss));
   return {
     requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd: minCl,
@@ -1245,6 +1248,7 @@ function normalizeLegPairOpts(raw) {
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd: dump,
     pairStopPriceUsd: stop,
+    pairFixedLossUsd: fixedLoss,
   };
 }
 
