@@ -1166,7 +1166,7 @@ api.get("/market-windows", async (req, res) => {
 
 /**
  * @param {unknown} raw
- * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, requireMinBidAboveLimit: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairBuyMinPreEntryPeakAbsChainlinkUsd: number, pairBuyBtcRiseWindowSec: number, pairBuyBtcRiseMinUsd: number, advancedPairSell: boolean, pairChainlinkAbsAboveMarketSellUsd: number, pairLossPctThreshold: number } | null}
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, requireMinBidAboveLimit: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairBuyMinPreEntryPeakAbsChainlinkUsd: number, pairBuyBtcRiseWindowSec: number, pairBuyBtcRiseMinUsd: number, advancedPairSell: boolean, pairChainlinkAbsAboveMarketSellUsd: number, pairStopPriceUsd: number } | null}
  */
 function normalizeCalcPresetParams(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -1231,9 +1231,10 @@ function normalizeLegPairOpts(raw) {
   let dump = num(o.pairChainlinkAbsAboveMarketSellUsd);
   if (dump == null) dump = 0;
   dump = Math.max(0, Math.min(9_999_999, Math.floor(dump)));
-  let loss = num(o.pairLossPctThreshold);
-  if (loss == null) loss = -80;
-  loss = Math.min(-1, Math.max(-1000, Math.round(loss)));
+  let stop = num(o.pairStopPriceUsd);
+  if (stop == null || stop <= 0) stop = 0;
+  stop = Math.max(0, Math.min(1, stop));
+  if (stop >= 1) stop = 0.999999;
   return {
     requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd: minCl,
@@ -1243,7 +1244,7 @@ function normalizeLegPairOpts(raw) {
     pairBuyBtcRiseMinUsd: riseU,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd: dump,
-    pairLossPctThreshold: loss,
+    pairStopPriceUsd: stop,
   };
 }
 

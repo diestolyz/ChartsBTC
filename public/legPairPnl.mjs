@@ -43,16 +43,16 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
  * @property {number} [pairBuyMinPreEntryPeakAbsChainlinkUsd] — >0 时：自本盘首条数据起至买点 tick 之前，|现货−开盘| 的历史最大值须 ≥ 该值（美元）；否则该候选买点无效并继续向后找；无有效差价参与峰值的 tick 则该候选不通过；0 关闭
  * @property {number} [pairBuyBtcRiseWindowSec] — 与 `pairBuyBtcRiseMinUsd` 同时 >0 时：**与**买入限价、**[t0,t1]** 内触发、该 tick 上 |现货−开盘| 上下界等**同时**作为买点前提；须在 **[t0, min(t1, 买点秒)]** 内已出现「时长 ≤ 本字段（秒）、现货上涨 ≥ `pairBuyBtcRiseMinUsd`」的异动（不晚于买点）。**成交计价**：满足时 **P_entry = 异动结束当刻（最晚一次满足条件的右端点）已买侧 mid**，不再用买入限价；止损线、浮亏基数等同理按 P_entry；任一为 0 则关闭
  * @property {number} [pairBuyBtcRiseMinUsd] — 见 `pairBuyBtcRiseWindowSec`；美元涨幅下界；0 关闭
- * @property {boolean} [advancedPairSell] — 为真时启用 `pairLossPctThreshold` 止损与 `pairChainlinkAbsAboveMarketSellUsd` 差价市价卖（参考买一）
+ * @property {boolean} [advancedPairSell] — 为真时启用 `pairStopPriceUsd` 止损与 `pairChainlinkAbsAboveMarketSellUsd` 差价市价卖（参考买一）
  * @property {number} [pairChainlinkAbsAboveMarketSellUsd] — 买入后 |现货−开盘| **首次严格大于**该美元值即在该 tick 按参考价（买一，缺则用 mid）平仓；至窗口末从未超过则全亏；0 关闭
- * @property {number} [pairLossPctThreshold] — 负数 %（相对入账价的跌幅）；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down）。止损价 **P_stop = P_entry×(1+阈值/100)**（例：−20 → 0.8×入账价）；若曾 **≤ P_stop** 则记止损亏损，亏损额 = 买价×(|阈值|/100)×份数；若至序列结束未触发则浮亏仍按同比例或全额（见实现）。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现破止损，则按**首次破止损**计，不按限价止盈盈利。
+ * @property {number} [pairStopPriceUsd] — 止损绝对价格（USD，0~1）；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down）。若曾 **≤ P_stop(=本字段)** 则记止损平仓，并按该止损价结算：盈亏 = (P_stop − P_entry)×份数。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现破止损，则按**首次破止损**计，不按限价止盈盈利。
  */
 
 /**
  * @param {unknown[]} rows
  * @param {string | null} slug
  * @param {LegPairPnlOpts} [opts]
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "dump" }} P_entry 为买入价（未开异动时为买入限价；开异动时为异动结束当刻已买侧 mid）。`closed` 时 P_exit 为平仓价。`float`：勾选 `advancedPairSell` 且有有效期末 mid 时 netUsd = N×(期末 mid−P_entry)（盯市）；未勾选高级卖时未平仓一律 netUsd = −N×P_entry（全额入账亏）；勾选但无期末 mid 时回退 −N×P_entry 或 −N×P_entry×|止损%|/100，仅此时带 floatLoss。
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "dump" }} P_entry 为买入价（未开异动时为买入限价；开异动时为异动结束当刻已买侧 mid）。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
  */
 /**
  * 买点索引之前（不含买点）各 tick 上已算好的 |现货−开盘| 峰值。
@@ -147,10 +147,10 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const advancedPairSell = Boolean(opts.advancedPairSell);
   const dumpUsd = num(opts.pairChainlinkAbsAboveMarketSellUsd);
   const dumpOn = advancedPairSell && dumpUsd != null && dumpUsd > 0;
-  const lossRaw = num(opts.pairLossPctThreshold);
-  const lossThr =
-    advancedPairSell && lossRaw != null && lossRaw < 0 && lossRaw >= -1000 ? lossRaw : null;
-  const stopOn = lossThr != null;
+  const stopRaw = num(opts.pairStopPriceUsd);
+  const stopPx =
+    advancedPairSell && stopRaw != null && stopRaw > 0 && stopRaw < 1 ? stopRaw : null;
+  const stopOn = stopPx != null;
 
   /** 窗口内首条非空 Chainlink 现货，作「开盘」参考（避免首 tick 无 btc 导致全程无差价） */
   let openBtc = null;
@@ -325,9 +325,8 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   let exitPrice;
 
   const eps = 1e-12;
-  /** 止损价：入账价×(1+止损%/100)，与 BTC5Mins `pairLimitStrategyCore` 市价止损线一致。仅看买入腿 mid */
-  const stopLinePx =
-    stopOn && P_entry > 0 ? P_entry * (1 + lossThr / 100) : null;
+  /** 止损价（绝对 USD，0~1）。仅看买入腿 mid */
+  const stopLinePx = stopOn ? stopPx : null;
 
   /** 各自首次触发的 tick 索引（整窗扫描，用于「先止盈后仍破止损」等回看） */
   let firstStopJ = -1;
@@ -390,7 +389,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     sellIdx = exitPickJ;
     if (exitPickKind === "stop") {
       exitKind = "stop";
-      exitPrice = ref != null ? ref : px;
+      exitPrice = stopPx != null ? stopPx : ref != null ? ref : px;
     } else if (exitPickKind === "limit") {
       exitKind = "limit";
       exitPrice = P_sellTarget;
@@ -404,8 +403,8 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     const q = points[sellIdx];
     const t_exit = q.sec;
     const profit =
-      exitKind === "stop" && stopOn && lossThr != null
-        ? -N * P_entry * (Math.abs(lossThr) / 100)
+      exitKind === "stop" && stopOn && stopPx != null
+        ? N * (stopPx - P_entry)
         : N * (exitPrice - P_entry);
     return {
       code: "closed",
@@ -421,25 +420,28 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   }
   /**
    * 「窗口末」未触发限价/止损/差价平仓：
-   * - 勾选 `advancedPairSell` 时：若有有效期末已买侧 mid，按盯市 netUsd = N×(期末 mid−P_entry)，可浮盈可浮亏，并返回 P_exit/t_exit。
-   * - 未勾选高级卖：不按期末 mid 折算，一律按全额入账亏 netUsd = −N×P_entry（与「仅基础+限价卖出」直觉一致）。
-   * - 勾选高级卖但无有效期末 mid：回退全亏 N×P_entry（若同时启用止损线则 ×|止损%|/100），netUsd 为负，并填 floatLoss。
+   * - 若有有效期末已买侧价格：用期末价判断结算（市场结束未止盈/止损）：
+   *   - 期末价 > 0.5：视为结算到 1（全盈利）→ netUsd = N×(1−P_entry)
+   *   - 期末价 < 0.5：视为结算到 0（全亏）→ netUsd = −N×P_entry
+   *   - 期末价 == 0.5：按盯市 netUsd = N×(0.5−P_entry)
+   *   并返回 P_exit/t_exit（P_exit 为该期末价）。
+   * - 若无有效期末价：回退全亏 N×P_entry（若同时启用止损线则 ×|止损%|/100），netUsd 为负，并填 floatLoss。
    */
   let pxEnd = /** @type {number | null} */ (null);
   let tEnd = /** @type {number | null} */ (null);
-  if (advancedPairSell) {
-    for (let j = buyIdx; j < points.length; j++) {
-      const q = points[j];
-      if (q.sec > WINDOW_SEC) break;
-      const px = leg === "up" ? q.u : q.d;
-      if (px != null && px > 0 && px < 1 - eps) {
-        pxEnd = px;
-        tEnd = q.sec;
-      }
+  for (let j = buyIdx; j < points.length; j++) {
+    const q = points[j];
+    if (q.sec > WINDOW_SEC) break;
+    const px = leg === "up" ? q.u : q.d;
+    if (px != null && px > 0 && px < 1 - eps) {
+      pxEnd = px;
+      tEnd = q.sec;
     }
   }
-  if (advancedPairSell && pxEnd != null && tEnd != null) {
-    const netUsdFloat = N * (pxEnd - P_entry);
+  if (pxEnd != null && tEnd != null) {
+    const settlePx =
+      pxEnd > 0.5 + eps ? 1 : pxEnd < 0.5 - eps ? 0 : 0.5;
+    const netUsdFloat = N * (settlePx - P_entry);
     return {
       code: "float",
       netUsd: netUsdFloat,
@@ -453,8 +455,8 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   }
   const fullStakeUsd = P_entry * N;
   const floatLoss =
-    advancedPairSell && stopOn
-      ? fullStakeUsd * (Math.abs(lossThr) / 100)
+    advancedPairSell && stopOn && stopPx != null
+      ? Math.max(0, (P_entry - stopPx) * N)
       : fullStakeUsd;
   return {
     code: "float",

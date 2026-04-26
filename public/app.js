@@ -621,7 +621,7 @@ const calcPairBuyBtcRiseWinSec = document.getElementById("calc-pair-buy-btc-rise
 const calcPairBuyBtcRiseMinUsd = document.getElementById("calc-pair-buy-btc-rise-min-usd");
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcClAbsMarketSell = document.getElementById("calc-cl-abs-above-market-sell-usd");
-const calcPairLossPct = document.getElementById("calc-pair-loss-pct-threshold");
+const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
 
 function setCalcBatchSummary(text) {
   if (!calcBatchSummary) return;
@@ -946,9 +946,12 @@ function readLegPairOptsFromForm() {
   if (dumpRaw != null) {
     pairChainlinkAbsAboveMarketSellUsd = Math.max(0, Math.min(9_999_999, Math.floor(dumpRaw)));
   }
-  let pairLossPctThreshold = num(calcPairLossPct?.value);
-  if (pairLossPctThreshold == null) pairLossPctThreshold = -80;
-  pairLossPctThreshold = Math.min(-1, Math.max(-1000, Math.round(pairLossPctThreshold)));
+  const stopForm = num(calcPairStopPriceUsd?.value);
+  let pairStopPriceUsd = 0;
+  if (stopForm != null && stopForm > 0) {
+    pairStopPriceUsd = Math.max(0, Math.min(1, stopForm));
+    if (pairStopPriceUsd >= 1) pairStopPriceUsd = 0.999999;
+  }
   return {
     requireMinBidAboveLimit: Boolean(calcRequireMinBid?.checked),
     pairBuyMinAbsChainlinkUsd,
@@ -958,7 +961,7 @@ function readLegPairOptsFromForm() {
     pairBuyBtcRiseMinUsd,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairChainlinkAbsAboveMarketSellUsd,
-    pairLossPctThreshold,
+    pairStopPriceUsd,
   };
 }
 
@@ -1019,7 +1022,7 @@ function collectCalcParamsForSave() {
     pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
-    pairLossPctThreshold,
+    pairStopPriceUsd,
   } = p;
   return {
     P_buyLimit,
@@ -1035,7 +1038,7 @@ function collectCalcParamsForSave() {
     pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
-    pairLossPctThreshold,
+    pairStopPriceUsd,
     fullBatch: Boolean(calcFullBatch?.checked),
   };
 }
@@ -1099,10 +1102,10 @@ function applyCalcPresetParams(params) {
     calcClAbsMarketSell.value =
       d != null ? String(Math.max(0, Math.min(9_999_999, Math.floor(d)))) : "0";
   }
-  if (calcPairLossPct) {
-    const L = num(p.pairLossPctThreshold);
-    calcPairLossPct.value =
-      L != null ? String(Math.min(-1, Math.max(-1000, Math.round(L)))) : "-80";
+  if (calcPairStopPriceUsd) {
+    const s = num(p.pairStopPriceUsd);
+    const v = s != null && s > 0 ? Math.max(0, Math.min(1, s)) : 0;
+    calcPairStopPriceUsd.value = v > 0 ? String(v) : "0";
   }
 }
 
@@ -1319,11 +1322,11 @@ if (calcPresetDelete) {
 
 /**
  * @param {ReturnType<typeof computeLegPnlFromRows>} r
- * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, advancedPairSell?: boolean, pairLossPctThreshold?: number }} params
+ * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, advancedPairSell?: boolean, pairStopPriceUsd?: number }} params
  */
 function applySingleCalcResult(r, params) {
   const fmtUsd = fmtUsdCalc;
-  const { t0, t1, P_buyLimit, P_sellTarget, N, advancedPairSell, pairLossPctThreshold } = params;
+  const { t0, t1, P_buyLimit, P_sellTarget, N, advancedPairSell, pairStopPriceUsd } = params;
   if (r.code === "no_data") {
     setCalcOutcome("warn", "无数据", "请先加载图表");
     return;
@@ -1367,10 +1370,10 @@ function applySingleCalcResult(r, params) {
     const pctNote =
       !hasMtm &&
       advancedPairSell &&
-      pairLossPctThreshold != null &&
-      pairLossPctThreshold < 0 &&
-      pairLossPctThreshold >= -1000
-        ? ` · 按止损线 ${pairLossPctThreshold}% 计亏（无期末 mid 回退）`
+      pairStopPriceUsd != null &&
+      pairStopPriceUsd > 0 &&
+      pairStopPriceUsd < 1
+        ? ` · 止损价 ${pairStopPriceUsd.toFixed(4)}（无期末价回退）`
         : "";
     const entryNote =
       Math.abs(r.P_entry - P_buyLimit) > 1e-8
@@ -1410,7 +1413,7 @@ async function runLegPairCalculator() {
     pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
-    pairLossPctThreshold,
+    pairStopPriceUsd,
   } = params;
   const calcOpts = {
     requireMinBidAboveLimit,
@@ -1421,7 +1424,7 @@ async function runLegPairCalculator() {
     pairBuyBtcRiseMinUsd,
     advancedPairSell,
     pairChainlinkAbsAboveMarketSellUsd,
-    pairLossPctThreshold,
+    pairStopPriceUsd,
   };
 
   if (!calcFullBatch?.checked) {
@@ -1472,7 +1475,7 @@ async function runLegPairCalculator() {
         pairBuyBtcRiseMinUsd,
         advancedPairSell,
         pairChainlinkAbsAboveMarketSellUsd,
-        pairLossPctThreshold,
+        pairStopPriceUsd,
       }),
     });
     const batchJ = await batchRes.json().catch(() => ({}));
