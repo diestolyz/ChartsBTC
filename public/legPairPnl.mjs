@@ -53,7 +53,7 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
  * @param {unknown[]} rows
  * @param {string | null} slug
  * @param {LegPairPnlOpts} [opts]
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "dump" }} P_entry 为买入价（未开异动时为买入限价；开异动时为异动结束当刻已买侧 mid）。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "dump" }} P_entry 为买入价（默认：触发买点当刻已买侧 mid；开异动链上条件且命中右端点时为异动结束当刻已买侧 mid）。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
  */
 /**
  * 买点索引之前（不含买点）各 tick 上已算好的 |现货−开盘| 峰值。
@@ -299,8 +299,10 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const pBuy = points[buyIdx];
   const legUp = highBuyMode ? highBuyLeg === "up" : pBuy.u <= P_buyLimit;
   const leg = legUp ? "up" : "down";
-  /** 未开异动：入账价 = 买入限价、时间 = 触发买点；开异动：入账价 = 异动结束当刻已买侧 mid、时间 = 该 tick */
-  let P_entry = P_buyLimit;
+  /** 默认：入账价 = 触发买点当刻已买侧 mid（实际买入价）；开异动且命中右端点：改为异动结束当刻该侧 mid */
+  const pxAtBuyTick = leg === "up" ? pBuy.u : pBuy.d;
+  let P_entry =
+    pxAtBuyTick != null && pxAtBuyTick > 0 && pxAtBuyTick < 1 - 1e-12 ? pxAtBuyTick : P_buyLimit;
   let t_entry = pBuy.sec;
   if (riseFilterOn) {
     const riseEndIdx = findLatestBtcRiseEndIndex(

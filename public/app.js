@@ -1395,7 +1395,7 @@ function applySingleCalcResult(r, params) {
         : "";
     const entryNote =
       Math.abs(r.P_entry - P_buyLimit) > 1e-8
-        ? " · 盈亏按入账价（含异动结束 mid）"
+        ? " · 与买入限价不同（按买点实际 mid）"
         : "";
     const profit = Number.isFinite(nu) ? nu : 0;
     const kind = profit >= 0 ? "profit" : "loss";
