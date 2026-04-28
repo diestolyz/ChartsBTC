@@ -178,15 +178,6 @@
           <div class="pair-calculator__adv-cols">
             <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-buy">
               <h4 class="pair-calculator__col-title" id="pair-calc-adv-buy">买</h4>
-              <label class="pair-calculator__check">
-                <input
-                  type="checkbox"
-                  id="calc-require-min-bid-above-limit"
-                  title="N1=起始秒：首个 sec≥起始秒 的 tick 上 |BTC 差价| 须严格大于触发买点当刻 |BTC 差价|；否则计未买入"
-                  aria-label="N1 当刻 BTC 差价须严格大于买点 BTC 差价，否则未买入"
-                />
-                <span>N1 |BTC 差价| &gt; 买点 |BTC 差价|（否则未买入）</span>
-              </label>
               <div class="pair-calculator__fields">
                 <label class="field">
                   允许买时 |BTC 差价| ≥（美元，区间下界）
@@ -214,45 +205,6 @@
                     aria-label="买入前校验：若大于 0，仅在当前 tick 的绝对 BTC 差价严格小于该美元值时才允许作为买点。0 表示不限制上界。"
                   />
                 </label>
-                <label class="field">
-                  买入点前 |BTC 差价| 峰值 ≥（美元，0 关闭）
-                  <input
-                    type="number"
-                    id="calc-pair-buy-min-pre-peak-abs-cl-usd"
-                    min="0"
-                    max="9999999"
-                    step="1"
-                    value="0"
-                    title="pairBuyMinPreEntryPeakAbsChainlinkUsd：自开盘首条数据至买点之前 |差价| 的最大值须 ≥ 该值；否则跳过该候选买点；0 关闭"
-                    aria-label="若大于 0：在买入时间窗内找到候选买点时，还要求从本盘第一条数据到该买点之前（不含买点）各 tick 上 |现货−开盘| 的历史最大值大于或等于该美元值，否则视为该 tick 不能买并继续向后找。此前无任何有效差价数据则该候选不通过。0 表示不启用。"
-                  />
-                </label>
-                <label class="field">
-                  异动：窗口（秒，与「起始–结束秒」同区间；0 关闭）
-                  <input
-                    type="number"
-                    id="calc-pair-buy-btc-rise-window-sec"
-                    min="0"
-                    max="300"
-                    step="1"
-                    value="0"
-                    title="pairBuyBtcRiseWindowSec：须与「上涨美元」同时 &gt;0；成交入账价为异动结束当刻已买侧 mid（非买入限价）"
-                    aria-label="与下一项均大于 0 时：买点前提同前述（限价触发、时间窗、BTC 差价区间等）；满足时实际买入价 P_entry 取「最晚一次满足异动」的结束当刻该侧 mid，时间 t_entry 亦为该当刻。任一为 0 则关闭。"
-                  />
-                </label>
-                <label class="field">
-                  异动：上涨（美元；0 关闭）
-                  <input
-                    type="number"
-                    id="calc-pair-buy-btc-rise-min-usd"
-                    min="0"
-                    max="9999999"
-                    step="1"
-                    value="0"
-                    title="pairBuyBtcRiseMinUsd：须与「异动窗口秒」同时 &gt;0；入账价按异动结束 mid，盈亏与止损基数同按该价"
-                    aria-label="与上一项均大于 0 时生效；涨幅阈值含义同前。开启时成交计价不以买入限价为准，而以异动结束当刻 mid 为准。0 关闭。"
-                  />
-                </label>
               </div>
             </div>
             <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-sell">
@@ -262,19 +214,6 @@
                 <span>启用止损 + BTC 差价平仓</span>
               </label>
               <div class="pair-calculator__fields">
-                <label class="field">
-                  平仓：|BTC 差价| &gt;（美元）
-                  <input
-                    type="number"
-                    id="calc-cl-abs-above-market-sell-usd"
-                    min="0"
-                    max="9999999"
-                    step="1"
-                    value="0"
-                    title="pairChainlinkAbsAboveMarketSellUsd"
-                    aria-label="勾选「启用止损 + BTC 差价平仓」且本值大于 0 时：自买入成交后的下一数据点起，按时间查找 |现货−开盘|（Chainlink 相对本盘首条现货），首次严格大于该美元阈值则在该时刻平仓；平仓价为该侧买一，无买一则用 mid。盈亏 = (平仓价 − 实际买入价) × 份数。若至本盘 300 秒结束从未出现差价大于该阈值，则按全亏（未平仓，浮亏 = 实际买入价 × 份数）。0 表示关闭。与下方浮亏止损线无关。"
-                  />
-                </label>
                 <label class="field">
                   止损价格（USD）
                   <input
@@ -299,6 +238,19 @@
                     value="0"
                     title="固定亏损金额（USD）。=0 时关闭；>0 时未平仓与亏损平仓均固定按该金额计亏"
                     aria-label="固定亏损金额（USD，默认 0）。0 表示关闭；不为 0 时启用固定亏损金额：所有未平仓（浮亏）与亏损平仓都会固定按该金额计亏（USD），不再随期末价或平仓价变化；盈利平仓仍按实际盈利计算。"
+                  />
+                </label>
+                <label class="field">
+                  手续费（固定，USD）
+                  <input
+                    type="number"
+                    id="calc-fee-usd"
+                    min="0"
+                    max="9999999"
+                    step="0.01"
+                    value="0.2"
+                    title="固定手续费（USD）。将从盈利中扣除，并叠加到亏损/浮亏上（netUsd = 原netUsd − feeUsd）。"
+                    aria-label="手续费（固定金额，USD）。盈利：卖出价×份数 − 手续费 − 买入价×份数；亏损：亏损金额 + 手续费。"
                   />
                 </label>
               </div>

@@ -613,16 +613,12 @@ const calcPresetName = document.getElementById("calc-preset-name");
 const calcPresetSave = document.getElementById("calc-preset-save");
 const calcPresetDelete = document.getElementById("calc-preset-delete");
 const calcPresetMsg = document.getElementById("calc-preset-msg");
-const calcRequireMinBid = document.getElementById("calc-require-min-bid-above-limit");
 const calcPairBuyMinAbsCl = document.getElementById("calc-pair-buy-min-abs-cl-usd");
 const calcPairBuyMaxAbsCl = document.getElementById("calc-pair-buy-max-abs-cl-usd");
-const calcPairBuyMinPrePeakAbsCl = document.getElementById("calc-pair-buy-min-pre-peak-abs-cl-usd");
-const calcPairBuyBtcRiseWinSec = document.getElementById("calc-pair-buy-btc-rise-window-sec");
-const calcPairBuyBtcRiseMinUsd = document.getElementById("calc-pair-buy-btc-rise-min-usd");
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
-const calcClAbsMarketSell = document.getElementById("calc-cl-abs-above-market-sell-usd");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
 const calcPairFixedLossUsd = document.getElementById("calc-pair-fixed-loss-usd");
+const calcFeeUsd = document.getElementById("calc-fee-usd");
 
 function setCalcBatchSummary(text) {
   if (!calcBatchSummary) return;
@@ -927,26 +923,6 @@ function readLegPairOptsFromForm() {
   if (maxRaw != null && maxRaw > 0) {
     pairBuyMaxAbsChainlinkUsd = Math.min(9_999_999, Math.max(1, Math.floor(maxRaw)));
   }
-  const prePeakRaw = num(calcPairBuyMinPrePeakAbsCl?.value);
-  let pairBuyMinPreEntryPeakAbsChainlinkUsd = 0;
-  if (prePeakRaw != null && prePeakRaw > 0) {
-    pairBuyMinPreEntryPeakAbsChainlinkUsd = Math.min(9_999_999, Math.max(1, Math.floor(prePeakRaw)));
-  }
-  const riseWinForm = num(calcPairBuyBtcRiseWinSec?.value);
-  let pairBuyBtcRiseWindowSec = 0;
-  if (riseWinForm != null && riseWinForm > 0) {
-    pairBuyBtcRiseWindowSec = Math.min(WINDOW_SEC, Math.max(1, Math.floor(riseWinForm)));
-  }
-  const riseUsdForm = num(calcPairBuyBtcRiseMinUsd?.value);
-  let pairBuyBtcRiseMinUsd = 0;
-  if (riseUsdForm != null && riseUsdForm > 0) {
-    pairBuyBtcRiseMinUsd = Math.min(9_999_999, Math.max(1, Math.floor(riseUsdForm)));
-  }
-  const dumpRaw = num(calcClAbsMarketSell?.value);
-  let pairChainlinkAbsAboveMarketSellUsd = 0;
-  if (dumpRaw != null) {
-    pairChainlinkAbsAboveMarketSellUsd = Math.max(0, Math.min(9_999_999, Math.floor(dumpRaw)));
-  }
   const stopForm = num(calcPairStopPriceUsd?.value);
   let pairStopPriceUsd = 0;
   if (stopForm != null && stopForm > 0) {
@@ -958,17 +934,18 @@ function readLegPairOptsFromForm() {
   if (fixedLossForm != null && fixedLossForm > 0) {
     pairFixedLossUsd = Math.max(0, Math.min(9_999_999, fixedLossForm));
   }
+  const feeForm = num(calcFeeUsd?.value);
+  let feeUsd = 0;
+  if (feeForm != null && feeForm > 0) {
+    feeUsd = Math.max(0, Math.min(9_999_999, feeForm));
+  }
   return {
-    requireMinBidAboveLimit: Boolean(calcRequireMinBid?.checked),
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
-    pairBuyMinPreEntryPeakAbsChainlinkUsd,
-    pairBuyBtcRiseWindowSec,
-    pairBuyBtcRiseMinUsd,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
-    pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
     pairFixedLossUsd,
+    feeUsd,
   };
 }
 
@@ -1021,16 +998,12 @@ function collectCalcParamsForSave() {
     t1,
     P_sellTarget,
     N,
-    requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
-    pairBuyMinPreEntryPeakAbsChainlinkUsd,
-    pairBuyBtcRiseWindowSec,
-    pairBuyBtcRiseMinUsd,
     advancedPairSell,
-    pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
     pairFixedLossUsd,
+    feeUsd,
   } = p;
   return {
     P_buyLimit,
@@ -1038,16 +1011,12 @@ function collectCalcParamsForSave() {
     t1,
     P_sellTarget,
     N,
-    requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
-    pairBuyMinPreEntryPeakAbsChainlinkUsd,
-    pairBuyBtcRiseWindowSec,
-    pairBuyBtcRiseMinUsd,
     advancedPairSell,
-    pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
     pairFixedLossUsd,
+    feeUsd,
     fullBatch: Boolean(calcFullBatch?.checked),
   };
 }
@@ -1067,13 +1036,6 @@ function applyCalcPresetParams(params) {
     calcFullBatch.checked =
       p.fullBatch === true || p.fullBatch === 1 || p.fullBatch === "1" || p.fullBatch === "true";
   }
-  if (calcRequireMinBid) {
-    calcRequireMinBid.checked =
-      p.requireMinBidAboveLimit === true ||
-      p.requireMinBidAboveLimit === 1 ||
-      p.requireMinBidAboveLimit === "1" ||
-      p.requireMinBidAboveLimit === "true";
-  }
   if (calcPairBuyMinAbsCl) {
     const vmin = num(p.pairBuyMinAbsChainlinkUsd);
     calcPairBuyMinAbsCl.value =
@@ -1084,32 +1046,12 @@ function applyCalcPresetParams(params) {
     calcPairBuyMaxAbsCl.value =
       v != null && v > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(v)))) : "0";
   }
-  if (calcPairBuyMinPrePeakAbsCl) {
-    const vp = num(p.pairBuyMinPreEntryPeakAbsChainlinkUsd);
-    calcPairBuyMinPrePeakAbsCl.value =
-      vp != null && vp > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(vp)))) : "0";
-  }
-  if (calcPairBuyBtcRiseWinSec) {
-    const rw = num(p.pairBuyBtcRiseWindowSec);
-    calcPairBuyBtcRiseWinSec.value =
-      rw != null && rw > 0 ? String(Math.min(WINDOW_SEC, Math.max(1, Math.floor(rw)))) : "0";
-  }
-  if (calcPairBuyBtcRiseMinUsd) {
-    const ru = num(p.pairBuyBtcRiseMinUsd);
-    calcPairBuyBtcRiseMinUsd.value =
-      ru != null && ru > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(ru)))) : "0";
-  }
   if (calcAdvancedPairSell) {
     calcAdvancedPairSell.checked =
       p.advancedPairSell === true ||
       p.advancedPairSell === 1 ||
       p.advancedPairSell === "1" ||
       p.advancedPairSell === "true";
-  }
-  if (calcClAbsMarketSell) {
-    const d = num(p.pairChainlinkAbsAboveMarketSellUsd);
-    calcClAbsMarketSell.value =
-      d != null ? String(Math.max(0, Math.min(9_999_999, Math.floor(d)))) : "0";
   }
   if (calcPairStopPriceUsd) {
     const s = num(p.pairStopPriceUsd);
@@ -1120,6 +1062,11 @@ function applyCalcPresetParams(params) {
     const fl = num(p.pairFixedLossUsd);
     const v = fl != null && fl > 0 ? Math.max(0, Math.min(9_999_999, fl)) : 0;
     calcPairFixedLossUsd.value = v > 0 ? String(v) : "0";
+  }
+  if (calcFeeUsd) {
+    const fee = num(p.feeUsd);
+    const v = fee != null && fee > 0 ? Math.max(0, Math.min(9_999_999, fee)) : 0;
+    calcFeeUsd.value = v > 0 ? String(v) : "0";
   }
 }
 
@@ -1148,13 +1095,6 @@ function rebuildCalcPresetOptions(filterRaw) {
     const pb = pp.P_buyLimit != null ? String(pp.P_buyLimit) : "—";
     const t0s = pp.t0 != null ? String(pp.t0) : "—";
     const t1s = pp.t1 != null ? String(pp.t1) : "—";
-    const bidG =
-      pp.requireMinBidAboveLimit === true ||
-      pp.requireMinBidAboveLimit === 1 ||
-      pp.requireMinBidAboveLimit === "1" ||
-      pp.requireMinBidAboveLimit === "true"
-        ? "N1Δ>买点"
-        : "";
     const clMin = num(pp.pairBuyMinAbsChainlinkUsd);
     const clMax = num(pp.pairBuyMaxAbsChainlinkUsd);
     let clBuyS = "";
@@ -1165,18 +1105,6 @@ function rebuildCalcPresetOptions(filterRaw) {
     } else if (clMax != null && clMax > 0) {
       clBuyS = `CL<${Math.floor(clMax)}`;
     }
-    const prePeak = num(pp.pairBuyMinPreEntryPeakAbsChainlinkUsd);
-    const prePeakS =
-      prePeak != null && prePeak > 0 ? `prePeak≥${Math.floor(prePeak)}` : "";
-    const riseW = num(pp.pairBuyBtcRiseWindowSec);
-    const riseU = num(pp.pairBuyBtcRiseMinUsd);
-    const riseS =
-      riseW != null &&
-      riseW > 0 &&
-      riseU != null &&
-      riseU > 0
-        ? `异动${Math.floor(riseW)}s/+${Math.floor(riseU)}`
-        : "";
     const adv =
       pp.advancedPairSell === true ||
       pp.advancedPairSell === 1 ||
@@ -1185,10 +1113,7 @@ function rebuildCalcPresetOptions(filterRaw) {
         ? "adv卖"
         : "";
     const bits = [`${pr.name} — 买 ${pb} · [${t0s},${t1s}]s`];
-    if (bidG) bits.push(bidG);
     if (clBuyS) bits.push(clBuyS);
-    if (prePeakS) bits.push(prePeakS);
-    if (riseS) bits.push(riseS);
     if (adv) bits.push(adv);
     o.title = bits.join(" · ");
     calcPresetSelect.appendChild(o);
@@ -1365,8 +1290,7 @@ function applySingleCalcResult(r, params) {
     const profit = r.netUsd;
     const sign = profit >= 0 ? "+" : "";
     const exitKind = /** @type {{ exitKind?: string }} */ (r).exitKind;
-    const exitNote =
-      exitKind === "stop" ? "（止损·mid 破线·固定比例）" : exitKind === "dump" ? "（BTC差价平仓·买一/mid）" : "";
+    const exitNote = exitKind === "stop" ? "（止损·mid 破线·固定比例）" : "";
     setCalcOutcome(
       profit >= 0 ? "profit" : "loss",
       `${profit >= 0 ? "盈利" : "亏损"} ${sign}${fmtUsd(profit)} USD`,
@@ -1423,28 +1347,20 @@ async function runLegPairCalculator() {
     t1,
     P_sellTarget,
     N,
-    requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
-    pairBuyMinPreEntryPeakAbsChainlinkUsd,
-    pairBuyBtcRiseWindowSec,
-    pairBuyBtcRiseMinUsd,
     advancedPairSell,
-    pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
     pairFixedLossUsd,
+    feeUsd,
   } = params;
   const calcOpts = {
-    requireMinBidAboveLimit,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
-    pairBuyMinPreEntryPeakAbsChainlinkUsd,
-    pairBuyBtcRiseWindowSec,
-    pairBuyBtcRiseMinUsd,
     advancedPairSell,
-    pairChainlinkAbsAboveMarketSellUsd,
     pairStopPriceUsd,
     pairFixedLossUsd,
+    feeUsd,
   };
 
   if (!calcFullBatch?.checked) {
@@ -1487,16 +1403,12 @@ async function runLegPairCalculator() {
         N,
         windowsLimit,
         tickLimit,
-        requireMinBidAboveLimit,
         pairBuyMinAbsChainlinkUsd,
         pairBuyMaxAbsChainlinkUsd,
-        pairBuyMinPreEntryPeakAbsChainlinkUsd,
-        pairBuyBtcRiseWindowSec,
-        pairBuyBtcRiseMinUsd,
         advancedPairSell,
-        pairChainlinkAbsAboveMarketSellUsd,
         pairStopPriceUsd,
         pairFixedLossUsd,
+        feeUsd,
       }),
     });
     const batchJ = await batchRes.json().catch(() => ({}));
