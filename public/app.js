@@ -83,7 +83,6 @@ function formatWindowOption(w) {
   const min = new Date(Number(w.min_ts_ms));
   const max = new Date(Number(w.max_ts_ms));
   const n = Number(w.tick_count) || 0;
-  const avgAbs = num(w.avg_abs_spread_usd);
   const d0 = min.toLocaleString(undefined, {
     month: "numeric",
     day: "numeric",
@@ -95,8 +94,7 @@ function formatWindowOption(w) {
     minute: "2-digit",
     second: "2-digit",
   });
-  const spreadNote = avgAbs != null ? ` · 平均差价 ${avgAbs.toFixed(2)}` : "";
-  return `${d0} → ${t1} · ${n} 点${spreadNote}`;
+  return `${d0} → ${t1} · ${n} 点`;
 }
 
 const chart = new Chart(chartCanvas, {
@@ -1484,11 +1482,9 @@ async function runLegPairCalculator() {
       const tag = row.tag != null ? String(row.tag) : String(row.code ?? "");
       const nu = Number(row.netUsd);
       const usd = Number.isFinite(nu) ? nu : 0;
-      const avgAbs = num(row.avgAbsSpreadUsd);
       const errS =
         row.code === "error" && row.error != null ? ` (${String(row.error)})` : "";
-      const spreadS = avgAbs != null ? ` · 均差 ${avgAbs.toFixed(2)}` : "";
-      return `${timeRange} · ${tag} · ${fmtUsdCalc(usd)}${spreadS}${errS}`;
+      return `${timeRange} · ${tag} · ${fmtUsdCalc(usd)}${errS}`;
     });
     const sign = total >= 0 ? "+" : "";
     const detailShown = detailLines.slice(0, CALC_BATCH_DETAIL_MAX_LINES);
