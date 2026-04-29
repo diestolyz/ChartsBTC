@@ -615,6 +615,9 @@ const calcPresetDelete = document.getElementById("calc-preset-delete");
 const calcPresetMsg = document.getElementById("calc-preset-msg");
 const calcPairBuyMinAbsCl = document.getElementById("calc-pair-buy-min-abs-cl-usd");
 const calcPairBuyMaxAbsCl = document.getElementById("calc-pair-buy-max-abs-cl-usd");
+const calcPairHighBuyNoAboveBefore = document.getElementById(
+  "calc-pair-high-buy-no-above-before",
+);
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
 const calcPairFixedLossUsd = document.getElementById("calc-pair-fixed-loss-usd");
@@ -942,6 +945,7 @@ function readLegPairOptsFromForm() {
   return {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairHighBuyNoAboveBeforeCross: calcPairHighBuyNoAboveBefore?.checked !== false,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1000,6 +1004,7 @@ function collectCalcParamsForSave() {
     N,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1013,6 +1018,7 @@ function collectCalcParamsForSave() {
     N,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1045,6 +1051,12 @@ function applyCalcPresetParams(params) {
     const v = num(p.pairBuyMaxAbsChainlinkUsd);
     calcPairBuyMaxAbsCl.value =
       v != null && v > 0 ? String(Math.min(9_999_999, Math.max(1, Math.floor(v)))) : "0";
+  }
+  if (calcPairHighBuyNoAboveBefore) {
+    const v = p.pairHighBuyNoAboveBeforeCross;
+    const off =
+      v === false || v === 0 || v === "0" || v === "false" || v === "off" || v === "no";
+    calcPairHighBuyNoAboveBefore.checked = !off;
   }
   if (calcAdvancedPairSell) {
     calcAdvancedPairSell.checked =
@@ -1349,6 +1361,7 @@ async function runLegPairCalculator() {
     N,
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1357,6 +1370,7 @@ async function runLegPairCalculator() {
   const calcOpts = {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
+    pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1405,6 +1419,7 @@ async function runLegPairCalculator() {
         tickLimit,
         pairBuyMinAbsChainlinkUsd,
         pairBuyMaxAbsChainlinkUsd,
+        pairHighBuyNoAboveBeforeCross,
         advancedPairSell,
         pairStopPriceUsd,
         pairFixedLossUsd,

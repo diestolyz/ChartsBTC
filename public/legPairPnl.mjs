@@ -43,6 +43,7 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
  * @property {number} [pairStopPriceUsd] — 止损绝对价格（USD，0~1）；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down）。若曾 **≤ P_stop(=本字段)** 则记止损平仓，并按该止损价结算：盈亏 = (P_stop − P_entry)×份数。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现破止损，则按**首次破止损**计，不按限价止盈盈利。
  * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  * @property {number} [feeUsd] — 固定手续费（USD）。只要触发买入（最终处于 closed/float），统一计入：netUsd = 原netUsd − feeUsd（即盈利扣手续费、亏损叠加手续费）。
+ * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
  */
 
 /**
@@ -76,6 +77,12 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
 
   const feeRaw = num(opts.feeUsd);
   const feeUsd = feeRaw != null && feeRaw > 0 ? Math.max(0, Math.min(9_999_999, feeRaw)) : 0;
+
+  const vNoAbove = opts.pairHighBuyNoAboveBeforeCross;
+  const highBuyNoAboveBeforeCross =
+    vNoAbove === false || vNoAbove === 0 || vNoAbove === "0" || vNoAbove === "false"
+      ? false
+      : true;
 
   /** 窗口内首条非空 Chainlink 现货，作「开盘」参考（避免首 tick 无 btc 导致全程无差价） */
   let openBtc = null;
@@ -146,10 +153,12 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
 
       const side = upCross && downCross ? "up" : upCross ? "up" : "down";
 
-      for (let k = 0; k < i; k++) {
-        const px = side === "up" ? points[k].u : points[k].d;
-        if (px != null && px > P_buyLimit + eps) {
-          return { code: "no_buy", netUsd: 0 };
+      if (highBuyNoAboveBeforeCross) {
+        for (let k = 0; k < i; k++) {
+          const px = side === "up" ? points[k].u : points[k].d;
+          if (px != null && px > P_buyLimit + eps) {
+            return { code: "no_buy", netUsd: 0 };
+          }
         }
       }
 

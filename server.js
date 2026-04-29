@@ -1166,7 +1166,7 @@ api.get("/market-windows", async (req, res) => {
 
 /**
  * @param {unknown} raw
- * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, advancedPairSell: boolean, pairStopPriceUsd: number, pairFixedLossUsd: number, feeUsd: number } | null}
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairHighBuyNoAboveBeforeCross: boolean, advancedPairSell: boolean, pairStopPriceUsd: number, pairFixedLossUsd: number, feeUsd: number } | null}
  */
 function normalizeCalcPresetParams(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -1228,9 +1228,15 @@ function normalizeLegPairOpts(raw) {
   let feeUsd = num(o.feeUsd);
   if (feeUsd == null || feeUsd <= 0) feeUsd = 0;
   feeUsd = Math.max(0, Math.min(9_999_999, feeUsd));
+  const vNoAbove = o.pairHighBuyNoAboveBeforeCross;
+  const pairHighBuyNoAboveBeforeCross =
+    vNoAbove === false || vNoAbove === 0 || vNoAbove === "0" || vNoAbove === "false"
+      ? false
+      : true;
   return {
     pairBuyMinAbsChainlinkUsd: minCl,
     pairBuyMaxAbsChainlinkUsd: maxCl,
+    pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd: stop,
     pairFixedLossUsd: fixedLoss,
