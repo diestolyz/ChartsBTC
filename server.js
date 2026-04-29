@@ -26,6 +26,7 @@ import {
   num,
   pnlDetailTag,
   WINDOW_SEC,
+  windowStartSecFromSlug,
 } from "./public/legPairPnl.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -295,7 +296,7 @@ function pickPriceToBeatFromMarket(m) {
   );
 }
 
-/** @type {{ slug: string; market: object; upId: string; downId: string; endMs: number | null; btcOpenUsd: number | null } | null} */
+/** @type {{ slug: string; market: object; upId: string; downId: string; endMs: number | null; windowStartMs: number | null; btcOpenUsd: number | null } | null} */
 let active = null;
 
 /** @type {number | null} */
@@ -450,10 +451,16 @@ function connectRtds() {
     const p = Number(pl.value);
     if (!Number.isFinite(p)) return;
     const tsRaw = pl.timestamp != null ? Number(pl.timestamp) : NaN;
-    lastBtcTs = Number.isFinite(tsRaw) ? tsRaw : Date.now();
+    const tsMs = Number.isFinite(tsRaw) ? (tsRaw < 1e12 ? tsRaw * 1000 : tsRaw) : Date.now();
+    lastBtcTs = tsMs;
     lastBtcUsd = p;
-    if (active && active.btcOpenUsd == null && Number.isFinite(p)) {
-      active.btcOpenUsd = p;
+    // 官方开盘价：Chainlink 数据流在窗口起点的第一条价格（按 RTDS payload timestamp 对齐到 slug 起点）。
+    if (active && active.btcOpenUsd == null && active.windowStartMs != null) {
+      const w0 = active.windowStartMs;
+      // 允许在窗口起点后的短时间内采到第一条（RTDS 推送并非严格对齐整秒）。
+      if (tsMs >= w0 && tsMs < w0 + 10_000) {
+        active.btcOpenUsd = p;
+      }
     }
   });
 
@@ -490,14 +497,21 @@ async function activateMarketFromGamma() {
   const endIso = marketEndIso(market);
   const endMs = endIso && Number.isFinite(Date.parse(endIso)) ? Date.parse(endIso) : null;
 
-  const same = active && active.slug === slug && active.upId === upId && active.downId === downId;
+  const prevActive = active;
+  const same = prevActive && prevActive.slug === slug && prevActive.upId === upId && prevActive.downId === downId;
+  const windowStartMs = windowStartMsFromSlug(slug);
   let btcOpenUsd = pickPriceToBeatFromMarket(market);
-  if (btcOpenUsd == null && same && active?.btcOpenUsd != null) btcOpenUsd = active.btcOpenUsd;
-  active = { slug, market, upId, downId, endMs, btcOpenUsd };
+  if (btcOpenUsd == null && same && prevActive?.btcOpenUsd != null) btcOpenUsd = prevActive.btcOpenUsd;
+  active = { slug, market, upId, downId, endMs, windowStartMs, btcOpenUsd };
   if (!same) {
     console.log(`[charts-btc] Active market: ${slug} up=${upId.slice(0, 12)}… down=${downId.slice(0, 12)}…`);
     secondBuffer = createEmptySecondBuffer();
     connectPolymarketWs([upId, downId]);
+    if (prevActive?.slug && prevActive?.btcOpenUsd != null) {
+      upsertBtcAbsSpread5mForMarket(prevActive.slug, prevActive.btcOpenUsd).catch((e) =>
+        console.error("[charts-btc] upsert btc_abs_spread_5m", e),
+      );
+    }
   }
   return true;
 }
@@ -538,6 +552,20 @@ async function ensureDb() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS btc_abs_spread_5m (
+      market_slug VARCHAR(512) NOT NULL,
+      window_start_ms BIGINT NOT NULL,
+      window_end_ms BIGINT NOT NULL,
+      btc_open_usd DECIMAL(24,8) NULL,
+      avg_abs_spread_usd DECIMAL(24,8) NULL,
+      sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+      computed_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      PRIMARY KEY (market_slug),
+      UNIQUE KEY uk_btc_abs_spread_5m_start (window_start_ms),
+      KEY idx_btc_abs_spread_5m_end (window_end_ms)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS charts_calc_presets (
       id CHAR(36) NOT NULL,
       name VARCHAR(80) NOT NULL,
@@ -548,6 +576,126 @@ async function ensureDb() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
   await migrateCalcPresetsFromJsonIfNeeded();
+}
+
+function windowStartMsFromSlug(slug) {
+  const sec = windowStartSecFromSlug(slug);
+  return sec != null ? sec * 1000 : null;
+}
+
+async function upsertBtcAbsSpread5mForMarket(marketSlug, btcOpenUsd) {
+  if (!pool) return;
+  if (!marketSlug || typeof marketSlug !== "string") return;
+  if (btcOpenUsd == null || !Number.isFinite(Number(btcOpenUsd))) return;
+  const w0ms = windowStartMsFromSlug(marketSlug);
+  if (w0ms == null) return;
+  const w1ms = w0ms + WINDOW_SEC * 1000;
+
+  const [rows] = await pool.execute(
+    `SELECT AVG(ABS(btc_usd - ?)) AS avg_abs, COUNT(*) AS c
+     FROM pm_book_ticks
+     WHERE market_slug = ? AND btc_usd IS NOT NULL`,
+    [Number(btcOpenUsd), marketSlug],
+  );
+  const r0 = /** @type {{ avg_abs?: unknown; c?: unknown }[]} */ (rows)[0] || {};
+  const avgAbs = jsonSafeFiniteNum(r0.avg_abs);
+  const count = Math.max(0, Math.floor(Number(r0.c ?? 0)));
+
+  await pool.execute(
+    `INSERT INTO btc_abs_spread_5m
+      (market_slug, window_start_ms, window_end_ms, btc_open_usd, avg_abs_spread_usd, sample_count)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+      window_start_ms = VALUES(window_start_ms),
+      window_end_ms = VALUES(window_end_ms),
+      btc_open_usd = VALUES(btc_open_usd),
+      avg_abs_spread_usd = VALUES(avg_abs_spread_usd),
+      sample_count = VALUES(sample_count)`,
+    [marketSlug, w0ms, w1ms, Number(btcOpenUsd), avgAbs, count],
+  );
+}
+
+async function inferBtcOpenUsdFromTicks(marketSlug) {
+  if (!pool) return null;
+  const [rows] = await pool.execute(
+    `SELECT btc_usd
+     FROM pm_book_ticks
+     WHERE market_slug = ? AND btc_usd IS NOT NULL
+     ORDER BY ts_ms ASC
+     LIMIT 1`,
+    [marketSlug],
+  );
+  const v = /** @type {unknown[]} */ (rows)[0] && typeof /** @type {{ btc_usd?: unknown }} */ (rows)[0] === "object"
+    ? /** @type {{ btc_usd?: unknown }} */ (rows)[0].btc_usd
+    : null;
+  return jsonSafeFiniteNum(v);
+}
+
+async function inferBtcOpenUsdFromWindowStartTicks(marketSlug) {
+  if (!pool) return null;
+  const w0ms = windowStartMsFromSlug(marketSlug);
+  if (w0ms == null) return null;
+  const [rows] = await pool.execute(
+    `SELECT btc_usd
+     FROM pm_book_ticks
+     WHERE market_slug = ? AND ts_ms >= ? AND btc_usd IS NOT NULL
+     ORDER BY ts_ms ASC
+     LIMIT 1`,
+    [marketSlug, w0ms],
+  );
+  const v =
+    Array.isArray(rows) && rows.length
+      ? jsonSafeFiniteNum(/** @type {{ btc_usd?: unknown }} */ (rows[0]).btc_usd)
+      : null;
+  return v;
+}
+
+async function backfillBtcAbsSpread5mAllMarkets(opts = {}) {
+  if (!pool) return { ok: false, error: "database_unavailable" };
+  const limit = Math.min(20_000, Math.max(1, Math.floor(Number(opts.limit ?? 20_000))));
+  const onlyMissing = opts.onlyMissing !== false;
+  const [rows] = await pool.query(
+    `SELECT market_slug AS slug
+     FROM pm_book_ticks
+     GROUP BY market_slug
+     ORDER BY MAX(ts_ms) DESC
+     LIMIT ${limit}`,
+  );
+  const slugs = (Array.isArray(rows) ? rows : [])
+    .map((r) => (r && typeof r === "object" ? String(/** @type {{ slug?: unknown }} */ (r).slug ?? "").trim() : ""))
+    .filter(Boolean);
+
+  let processed = 0;
+  let inserted = 0;
+  let skippedNoOpen = 0;
+  let skippedExisting = 0;
+  let failed = 0;
+  let openFromWindowStart = 0;
+
+  for (const slug of slugs) {
+    processed += 1;
+    try {
+      if (onlyMissing) {
+        const [ex] = await pool.execute(`SELECT 1 FROM btc_abs_spread_5m WHERE market_slug = ? LIMIT 1`, [slug]);
+        if (Array.isArray(ex) && ex.length > 0) {
+          skippedExisting += 1;
+          continue;
+        }
+      }
+      const open = await inferBtcOpenUsdFromWindowStartTicks(slug);
+      if (open != null) openFromWindowStart += 1;
+      if (open == null) {
+        skippedNoOpen += 1;
+        continue;
+      }
+      await upsertBtcAbsSpread5mForMarket(slug, open);
+      inserted += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return { ok: true, limit, onlyMissing, openFromWindowStart, processed, inserted, skippedNoOpen, skippedExisting, failed };
 }
 
 /**
@@ -787,8 +935,42 @@ api.post("/auth/logout", (_req, res) => {
   res.json({ ok: true });
 });
 
+function isLoopbackRequest(req) {
+  const ra = req.socket?.remoteAddress || "";
+  return (
+    ra === "127.0.0.1" ||
+    ra === "::1" ||
+    ra === "::ffff:127.0.0.1" ||
+    ra.startsWith("127.")
+  );
+}
+
+/**
+ * 仅允许服务器本机触发的运维任务：避免登录态/外网暴露。
+ * 注意：需置于 `/api` 的统一鉴权中间件之前。
+ */
+api.post("/btc-abs-spread-5m/backfill", async (req, res) => {
+  if (!isLoopbackRequest(req)) {
+    res.status(403).json({ ok: false, error: "forbidden", hint: "only loopback allowed" });
+    return;
+  }
+  try {
+    const b = req.body && typeof req.body === "object" ? req.body : {};
+    const limit = clampWindowListLimit(b.limit ?? 20_000);
+    const onlyMissing = b.onlyMissing !== false;
+    const out = await backfillBtcAbsSpread5mAllMarkets({ limit, onlyMissing });
+    res.json(out);
+  } catch (e) {
+    console.error("[charts-btc] /api/btc-abs-spread-5m/backfill", e);
+    res.status(500).json({ ok: false, error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
 api.use((req, res, next) => {
   if (!AUTH_ENABLED) return next();
+  if (isLoopbackRequest(req) && String(req.path || "").startsWith("/btc-abs-spread-5m")) {
+    return next();
+  }
   if (!isAuthenticated(req)) {
     res.status(401).json({ error: "unauthorized", needLogin: true });
     return;
@@ -1056,6 +1238,24 @@ api.post("/calc-batch", async (req, res) => {
       if (slug) slugs.push(slug);
     }
 
+    /** @type {Map<string, number | null>} */
+    const spreadBySlug = new Map();
+    if (slugs.length) {
+      const placeholders = slugs.map(() => "?").join(",");
+      const [sRows] = await pool.query(
+        `SELECT market_slug, avg_abs_spread_usd
+         FROM btc_abs_spread_5m
+         WHERE market_slug IN (${placeholders})`,
+        slugs,
+      );
+      for (const row of Array.isArray(sRows) ? sRows : []) {
+        if (!row || typeof row !== "object") continue;
+        const s = /** @type {{ market_slug?: unknown }} */ (row).market_slug;
+        if (typeof s !== "string" || !s) continue;
+        spreadBySlug.set(s, jsonSafeFiniteNum(/** @type {{ avg_abs_spread_usd?: unknown }} */ (row).avg_abs_spread_usd));
+      }
+    }
+
     const tickRows = await fetchTicksRowsForSlugs(slugs, tickLimit);
     const bySlug = groupTicksBySlug(tickRows);
 
@@ -1099,6 +1299,7 @@ api.post("/calc-batch", async (req, res) => {
           tag,
           netUsd: r.netUsd,
           code: r.code,
+          avgAbsSpreadUsd: spreadBySlug.has(slug) ? spreadBySlug.get(slug) : null,
         };
         if (r.code === "closed" || r.code === "float") {
           one.ticks = serializeTicksForCalcBatchExport(ticks);
@@ -1113,6 +1314,7 @@ api.post("/calc-batch", async (req, res) => {
           tag: "错误",
           netUsd: 0,
           code: "error",
+          avgAbsSpreadUsd: spreadBySlug.has(slug) ? spreadBySlug.get(slug) : null,
           error: e instanceof Error ? e.message : String(e),
         });
       }
@@ -1148,18 +1350,52 @@ api.get("/market-windows", async (req, res) => {
   const safeLimit = clampWindowListLimit(req.query.limit ?? 96);
   try {
     const [rows] = await pool.query(
-      `SELECT market_slug AS slug,
-              MIN(ts_ms) AS min_ts_ms,
-              MAX(ts_ms) AS max_ts_ms,
-              COUNT(*) AS tick_count
-       FROM pm_book_ticks
-       GROUP BY market_slug
-       ORDER BY max_ts_ms DESC
+      `SELECT w.slug,
+              w.min_ts_ms,
+              w.max_ts_ms,
+              w.tick_count,
+              s.avg_abs_spread_usd,
+              s.sample_count AS btc_sample_count
+       FROM (
+         SELECT market_slug AS slug,
+                MIN(ts_ms) AS min_ts_ms,
+                MAX(ts_ms) AS max_ts_ms,
+                COUNT(*) AS tick_count
+         FROM pm_book_ticks
+         GROUP BY market_slug
+       ) w
+       LEFT JOIN btc_abs_spread_5m s
+         ON s.market_slug = w.slug
+       ORDER BY w.max_ts_ms DESC
        LIMIT ${safeLimit}`,
     );
     res.json({ windows: rows });
   } catch (e) {
     console.error("[charts-btc] /api/market-windows", e);
+    res.status(500).json({ error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
+api.get("/btc-abs-spread-5m", async (req, res) => {
+  if (!pool) {
+    res.status(503).json({ error: "database_unavailable" });
+    return;
+  }
+  if (AUTH_ENABLED && !isAuthenticated(req) && !isLoopbackRequest(req)) {
+    res.status(401).json({ error: "unauthorized", needLogin: true });
+    return;
+  }
+  const safeLimit = clampWindowListLimit(req.query.limit ?? 96);
+  try {
+    const [rows] = await pool.query(
+      `SELECT market_slug, window_start_ms, window_end_ms, btc_open_usd, avg_abs_spread_usd, sample_count, computed_at
+       FROM btc_abs_spread_5m
+       ORDER BY window_start_ms DESC
+       LIMIT ${safeLimit}`,
+    );
+    res.json({ rows });
+  } catch (e) {
+    console.error("[charts-btc] /api/btc-abs-spread-5m", e);
     res.status(500).json({ error: String(e instanceof Error ? e.message : e) });
   }
 });
@@ -1464,6 +1700,45 @@ async function handleChartSubscribe(ws, msg) {
     console.error("[charts-btc] ws health before snapshot", e);
   }
 
+  let openBtcUsd = null;
+  // 开盘价只认官方来源（Chainlink 数据流）：优先表里已固化的官方开盘；无则用该盘起点后的首条 BTC tick 近似（均来自同一 Chainlink 流）。
+  try {
+    const [rows] = await pool.execute(
+      `SELECT btc_open_usd
+       FROM btc_abs_spread_5m
+       WHERE market_slug = ?
+       LIMIT 1`,
+      [slug],
+    );
+    openBtcUsd =
+      Array.isArray(rows) && rows.length
+        ? jsonSafeFiniteNum(/** @type {{ btc_open_usd?: unknown }} */ (rows[0]).btc_open_usd)
+        : null;
+  } catch {
+    openBtcUsd = null;
+  }
+  if (openBtcUsd == null) {
+    const w0ms = windowStartMsFromSlug(slug);
+    if (w0ms != null) {
+      try {
+        const [rows] = await pool.execute(
+          `SELECT btc_usd
+           FROM pm_book_ticks
+           WHERE market_slug = ? AND ts_ms >= ? AND btc_usd IS NOT NULL
+           ORDER BY ts_ms ASC
+           LIMIT 1`,
+          [slug, w0ms],
+        );
+        openBtcUsd =
+          Array.isArray(rows) && rows.length
+            ? jsonSafeFiniteNum(/** @type {{ btc_usd?: unknown }} */ (rows[0]).btc_usd)
+            : null;
+      } catch {
+        openBtcUsd = null;
+      }
+    }
+  }
+
   const ticks = await fetchTicksRows({ safeLimit, sinceMs: null, slug });
   ws.send(
     JSON.stringify({
@@ -1471,6 +1746,7 @@ async function handleChartSubscribe(ws, msg) {
       ticks,
       slug,
       mode: live ? "live" : "archive",
+      btcOpenUsd: openBtcUsd,
     }),
   );
 }

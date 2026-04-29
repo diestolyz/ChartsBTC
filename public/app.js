@@ -83,6 +83,7 @@ function formatWindowOption(w) {
   const min = new Date(Number(w.min_ts_ms));
   const max = new Date(Number(w.max_ts_ms));
   const n = Number(w.tick_count) || 0;
+  const avgAbs = num(w.avg_abs_spread_usd);
   const d0 = min.toLocaleString(undefined, {
     month: "numeric",
     day: "numeric",
@@ -94,7 +95,8 @@ function formatWindowOption(w) {
     minute: "2-digit",
     second: "2-digit",
   });
-  return `${d0} → ${t1} · ${n} 点`;
+  const spreadNote = avgAbs != null ? ` · 平均差价 ${avgAbs.toFixed(2)}` : "";
+  return `${d0} → ${t1} · ${n} 点${spreadNote}`;
 }
 
 const chart = new Chart(chartCanvas, {
@@ -208,19 +210,17 @@ function formatUsdPrice(px) {
  * @param {boolean} fromArchive - 用该盘首条记录的 btc 作开盘近似（服务端按时间升序返回）
  * @param {string | null} marketSlug - 用于解析窗口起点（slug 尾缀 unix）
  */
-function applyRows(rows, fromArchive = false, marketSlug = null) {
+function applyRows(rows, fromArchive = false, marketSlug = null, archiveOpenOverride = null) {
   const tUp = [];
   const tDown = [];
   const tBtc = [];
 
   let open = chainlinkOpenUsd;
   if (fromArchive) {
-    if (rows.length > 0) {
-      const firstBtc = num(rows[0].btc_usd);
-      open = firstBtc != null ? firstBtc : null;
-    } else {
-      open = null;
-    }
+    const ovr = num(archiveOpenOverride);
+    if (ovr != null) {
+      open = ovr;
+    } else open = null;
   }
 
   if (liveBtcOpen) {
@@ -269,7 +269,10 @@ function applyRows(rows, fromArchive = false, marketSlug = null) {
     } else {
       liveBtc.textContent = "—";
     }
-  } else if (
+  }
+
+  // 实时盘：优先用 health 的差价（更接近 RTDS 最新值；tick 仅每秒入库，可能滞后/缺样本）。
+  if (
     !fromArchive &&
     lastHealthJson?.btcDeltaUsd != null &&
     Number.isFinite(Number(lastHealthJson.btcDeltaUsd))
@@ -339,6 +342,7 @@ function connectChartWs() {
     if (msg.type === "snapshot") {
       tickBuffer = Array.isArray(msg.ticks) ? msg.ticks.slice() : [];
       const fromArchive = chartSlugOverride != null && chartSlugOverride !== "";
+      const archiveOpenOverride = fromArchive ? num(msg.btcOpenUsd) : null;
       let slugForTicks =
         chartSlugOverride != null && chartSlugOverride !== ""
           ? chartSlugOverride
@@ -348,7 +352,7 @@ function connectChartWs() {
         activeSlug = msg.slug;
         if (slugLabel) slugLabel.textContent = msg.slug;
       }
-      applyRows(tickBuffer, fromArchive, slugForTicks);
+      applyRows(tickBuffer, fromArchive, slugForTicks, archiveOpenOverride);
       const mode = fromArchive ? "归档" : "实时";
       const slugShow = slugForTicks ?? "—";
       chartStatusLine = `${tickBuffer.length} 条 · ${mode} · ${slugShow}`;
@@ -1452,9 +1456,11 @@ async function runLegPairCalculator() {
       const tag = row.tag != null ? String(row.tag) : String(row.code ?? "");
       const nu = Number(row.netUsd);
       const usd = Number.isFinite(nu) ? nu : 0;
+      const avgAbs = num(row.avgAbsSpreadUsd);
       const errS =
         row.code === "error" && row.error != null ? ` (${String(row.error)})` : "";
-      return `${timeRange} · ${tag} · ${fmtUsdCalc(usd)}${errS}`;
+      const spreadS = avgAbs != null ? ` · 均差 ${avgAbs.toFixed(2)}` : "";
+      return `${timeRange} · ${tag} · ${fmtUsdCalc(usd)}${spreadS}${errS}`;
     });
     const sign = total >= 0 ? "+" : "";
     const detailShown = detailLines.slice(0, CALC_BATCH_DETAIL_MAX_LINES);
