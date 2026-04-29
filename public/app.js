@@ -814,13 +814,19 @@ function updateCalcBatchChart(details) {
     : [];
   if (!rows.length) return;
 
-  const sorted = /** @type {{ startMs: number; netUsd: number; timeRange?: string; tag?: string }[]} */ (
+  const sorted = /** @type {{ startMs: number; netUsd: number; timeRange?: string; tag?: string; avgAbsSpreadUsd?: number | null }[]} */ (
     [...rows].sort((a, b) => a.startMs - b.startMs)
   );
   const data = sorted.map((d) => ({ x: d.startMs, y: d.netUsd }));
   const colors = sorted.map((d) =>
     d.netUsd >= 0 ? "rgba(74, 222, 128, 0.85)" : "rgba(248, 113, 113, 0.85)",
   );
+  const spreadData = sorted
+    .map((d) => {
+      const s = num(d.avgAbsSpreadUsd);
+      return s != null ? { x: d.startMs, y: s } : null;
+    })
+    .filter(Boolean);
 
   calcBatchChart = new Chart(calcBatchCanvas, {
     type: "scatter",
@@ -836,6 +842,22 @@ function updateCalcBatchChart(details) {
           pointBorderColor: "rgba(255,255,255,0.25)",
           pointBorderWidth: 1,
         },
+        ...(spreadData.length
+          ? [
+              {
+                type: "line",
+                label: "均差 (USD)",
+                data: /** @type {any} */ (spreadData),
+                yAxisID: "y1",
+                parsing: false,
+                pointRadius: 0,
+                borderWidth: 1.5,
+                tension: 0.15,
+                borderColor: "rgba(59, 130, 246, 0.85)",
+                backgroundColor: "rgba(59, 130, 246, 0.08)",
+              },
+            ]
+          : []),
       ],
     },
     options: {
@@ -861,7 +883,7 @@ function updateCalcBatchChart(details) {
                 typeof y === "number" && Number.isFinite(y)
                   ? y.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })
                   : String(y);
-              const bits = [`盈亏 ${usd} USD`];
+              const bits = [ctx.dataset?.label?.includes("均差") ? `均差 ${usd} USD` : `盈亏 ${usd} USD`];
               if (tag) bits.push(tag);
               if (tr) bits.push(tr);
               return bits.join(" · ");
@@ -892,6 +914,12 @@ function updateCalcBatchChart(details) {
           title: { display: true, text: "盈亏 (USD)", color: "#9ca3af" },
           grid: { color: "rgba(255,255,255,0.06)" },
           ticks: { color: "#8a8f98" },
+        },
+        y1: {
+          position: "right",
+          title: { display: true, text: "均差 (USD)", color: "#9ca3af" },
+          grid: { drawOnChartArea: false },
+          ticks: { color: "rgba(59, 130, 246, 0.85)" },
         },
       },
     },
