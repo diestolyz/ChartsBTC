@@ -26,6 +26,7 @@ import {
   num,
   pnlDetailTag,
   WINDOW_SEC,
+  WINDOW_EFFECTIVE_MAX_SEC,
   windowStartSecFromSlug,
 } from "./public/legPairPnl.mjs";
 
@@ -1424,7 +1425,7 @@ function normalizeCalcPresetParams(raw) {
     t1 = x;
   }
   t0 = Math.max(0, t0);
-  t1 = Math.min(WINDOW_SEC, t1);
+  t1 = Math.min(WINDOW_EFFECTIVE_MAX_SEC, t1);
 
   const legOpts = normalizeLegPairOpts(o);
 

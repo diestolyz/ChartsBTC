@@ -4,6 +4,10 @@
 
 export const WINDOW_SEC = 300;
 
+/** 盘末若干秒盘口常失真：`computeLegPnlFromRows` 等测算不采纳 `sec` 严格大于此值的采样；图表仍按整窗 `WINDOW_SEC` 展示。 */
+export const WINDOW_CHART_TRIM_END_SEC = 13;
+export const WINDOW_EFFECTIVE_MAX_SEC = WINDOW_SEC - WINDOW_CHART_TRIM_END_SEC;
+
 export function num(v) {
   if (v == null || v === "") return null;
   const n = typeof v === "number" ? v : Number(v);
@@ -32,6 +36,33 @@ export function secondsFromWindowOpen(ts_ms, slug, rowsAsc) {
     if (t0 != null) return (ts_ms - t0) / 1000;
   }
   return 0;
+}
+
+/**
+ * `float` 未平仓结算专用：仅使用 **裁切区间之后** 到窗末的采样，即
+ * `sec ∈ (WINDOW_EFFECTIVE_MAX_SEC, WINDOW_SEC]`（对应「`WINDOW_CHART_TRIM_END_SEC`～300s」之间不入 `points`、也不参与买/卖扫描，**仅**在此取 **一条** 价做 >0.5 / <0.5 判定）。
+ * 在该区间内取 **sec 最大**（最接近 `WINDOW_SEC`）的一条已买腿 mid；若该区间无有效价则返回 `null`（不读 `[0, WINDOW_EFFECTIVE_MAX_SEC]` 作未平仓结算价）。
+ * @param {unknown[]} rowsAsc
+ * @param {string | null} slug
+ * @param {"up" | "down"} leg
+ * @returns {{ sec: number; px: number } | null}
+ */
+function terminalFloatLegPxFromRows(rowsAsc, slug, leg) {
+  const eps = 1e-12;
+  /** @type {{ sec: number; px: number } | null} */
+  let tailPick = null;
+  for (const r of rowsAsc) {
+    const ts = num(r.ts_ms);
+    if (ts == null) continue;
+    const sec = secondsFromWindowOpen(ts, slug, rowsAsc);
+    if (sec <= WINDOW_EFFECTIVE_MAX_SEC || sec > WINDOW_SEC) continue;
+    const u = num(r.up_mid);
+    const d = num(r.down_mid);
+    const px = leg === "up" ? u : d;
+    if (px == null || !(px > 0 && px < 1 - eps)) continue;
+    if (!tailPick || sec > tailPick.sec) tailPick = { sec, px };
+  }
+  return tailPick;
 }
 
 /**
@@ -108,7 +139,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     const btcRow = num(r.btc_usd);
     if (btcRow != null) lastBtc = btcRow;
     const sec = secondsFromWindowOpen(ts, slug, rows);
-    if (sec < 0 || sec > WINDOW_SEC) continue;
+    if (sec < 0 || sec > WINDOW_EFFECTIVE_MAX_SEC) continue;
     let absCl = null;
     if (openBtc != null && lastBtc != null) {
       absCl = Math.abs(lastBtc - openBtc);
@@ -220,7 +251,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
 
   for (let j = buyIdx + 1; j < points.length; j++) {
     const q = points[j];
-    if (q.sec > WINDOW_SEC) break;
+    if (q.sec > WINDOW_EFFECTIVE_MAX_SEC) break;
     /** 仅已买入侧 mid；与另一侧无关 */
     const px = leg === "up" ? q.u : q.d;
     const bid = leg === "up" ? q.ub : q.db;
@@ -299,34 +330,25 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     };
   }
   /**
-   * 「窗口末」未触发限价/止损/差价平仓：
-   * - 若有有效期末已买侧价格：用期末价判断结算（市场结束未止盈/止损）：
-   *   - 期末价 > 0.5：视为结算到 1（全盈利）→ netUsd = N×(1−P_entry)
-   *   - 期末价 < 0.5：视为结算到 0（全亏）→ netUsd = −N×P_entry
-   *   - 期末价 == 0.5：按盯市 netUsd = N×(0.5−P_entry)
-   *   并返回 P_exit/t_exit（P_exit 为该期末价）。
-   * - 若无有效期末价：回退全亏 N×P_entry（若同时启用止损线则 ×|止损%|/100），netUsd 为负，并填 floatLoss。
+   * 「未平仓」：买/止盈/止损仍仅用 `points`（sec ≤ `WINDOW_EFFECTIVE_MAX_SEC`）。
+   * 结算价 **只** 来自 `rows` 中 `sec ∈ (WINDOW_EFFECTIVE_MAX_SEC, WINDOW_SEC]` 的 **一条**（sec 最大、即最接近 300s）；**不用**该开区间内的其它逻辑聚合，也 **不** 用 `[0, WINDOW_EFFECTIVE_MAX_SEC]` 的价做未平仓二元判定。
+   * - 该价 > 0.5：结算到 1 → netUsd = N×(1−P_entry)
+   * - 该价 < 0.5：结算到 0 → netUsd = −N×P_entry
+   * - == 0.5：盯市 N×(0.5−P_entry)
+   * 若尾段无有效价：`terminal` 为 `null`，走下方全亏回退。
    */
-  let pxEnd = /** @type {number | null} */ (null);
-  let tEnd = /** @type {number | null} */ (null);
-  for (let j = buyIdx; j < points.length; j++) {
-    const q = points[j];
-    if (q.sec > WINDOW_SEC) break;
-    const px = leg === "up" ? q.u : q.d;
-    if (px != null && px > 0 && px < 1 - eps) {
-      pxEnd = px;
-      tEnd = q.sec;
-    }
-  }
-  if (pxEnd != null && tEnd != null) {
+  const terminal = terminalFloatLegPxFromRows(rows, slug, leg);
+  if (terminal != null) {
+    const pxEnd = terminal.px;
+    const tEnd = terminal.sec;
     const settlePx = pxEnd > 0.5 + eps ? 1 : pxEnd < 0.5 - eps ? 0 : 0.5;
     let netUsdFloat =
       fixedLossUsd > 0
         ? pxEnd > 0.5 + eps
-          ? N * (1 - P_entry) // >0.5：视为结算到 1（全盈利）
+          ? N * (1 - P_entry)
           : pxEnd < 0.5 - eps
-            ? -fixedLossUsd // <0.5：固定亏损金额
-            : N * (0.5 - P_entry) // ==0.5：仍按 0.5 盯市
+            ? -fixedLossUsd
+            : N * (0.5 - P_entry)
         : N * (settlePx - P_entry);
     if (feeUsd > 0) netUsdFloat -= feeUsd;
     return {

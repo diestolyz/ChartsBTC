@@ -5,6 +5,7 @@
 
 import {
   WINDOW_SEC,
+  WINDOW_EFFECTIVE_MAX_SEC,
   num,
   secondsFromWindowOpen,
   computeLegPnlFromRows,
@@ -999,7 +1000,7 @@ function readCalcParams() {
     t1 = x;
   }
   t0 = Math.max(0, t0);
-  t1 = Math.min(WINDOW_SEC, t1);
+  t1 = Math.min(WINDOW_EFFECTIVE_MAX_SEC, t1);
   return { P_buyLimit, t0, t1, P_sellTarget, N, ...readLegPairOptsFromForm() };
 }
 
