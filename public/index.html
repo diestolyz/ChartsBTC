@@ -42,19 +42,6 @@
               </button>
             </div>
           </label>
-          <label class="field">
-            时间跨度（s）
-            <input
-              type="number"
-              id="limit-input"
-              min="60"
-              max="20000"
-              value="400"
-              step="60"
-              title="图表序列条数上限；同时作为已入库 5m 市场个数（时段下拉与「计算全量」）"
-            />
-          </label>
-          <button type="button" class="btn" id="refresh-btn">刷新</button>
           <button type="button" class="btn btn--ghost" id="logout-btn" hidden>退出登录</button>
         </div>
       </header>
@@ -172,7 +159,7 @@
 
         <div class="pair-calculator__block pair-calculator__block--adv">
           <h3 class="pair-calculator__block-title" id="pair-calc-adv-title">对价扩展</h3>
-          <p class="pair-calculator__block-lead muted">
+          <p class="pair-calculator__block-lead muted hidden">
             可不填；未启用时与仅「基础」+ mid 测算一致。
           </p>
           <div class="pair-calculator__adv-cols">
@@ -268,6 +255,18 @@
             <span class="calc-full-batch__ui" aria-hidden="true"></span>
             <span class="calc-full-batch__label">计算全量</span>
           </label>
+          <label class="field">
+            <input
+              type="number"
+              id="limit-input"
+              min="60"
+              max="20000"
+              value="400"
+              step="60"
+              title="图表序列条数上限；同时作为已入库 5m 市场个数（时段下拉与「计算全量」）"
+            />
+          </label>
+          <button type="button" class="btn" id="refresh-btn">刷新</button>
           <button
             type="button"
             class="btn btn--ghost"
@@ -278,7 +277,7 @@
             导出 Excel
           </button>
         </div>
-        <p class="pair-calculator__batch-hint muted">
+        <p class="pair-calculator__batch-hint muted hidden">
           开启「计算全量」后，由服务端<strong>一次</strong>从数据库拉齐<strong>最近 N 个</strong>5
           分钟市场的盘口序列（<strong>N = 页头「时间跨度」数值</strong>，与时段下拉一致），<strong>触发与结算规则</strong>与本节「基础」「对价扩展」一致；汇总<strong>累计盈亏</strong>（已买入但至该盘序列结束仍未平仓：以期末已买侧价格判断结算——期末价&gt;0.5 视为结算到 1（全盈利），期末价&lt;0.5 视为结算到 0（全亏）；仅当缺少有效期末价时回退为
           <strong>−入账价×份数</strong>或同时填止损线时的 <strong>−(入账价×份数)×|止损%|/100</strong>；未触发买入计 0）。下方图表横轴为各盘窗口起点时间，纵轴为对应盈亏（USD）。
@@ -301,13 +300,6 @@
         <pre class="pair-calculator__detail mono" id="calc-result"></pre>
       </section>
 
-      <p class="footnote muted">
-        与
-        <a href="https://polymarket.com/event/btc-updown-5m" target="_blank" rel="noopener noreferrer"
-          >Polymarket BTC 5m</a
-        >
-        规则一致
-      </p>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>

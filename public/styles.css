@@ -68,6 +68,10 @@ h1 {
   color: var(--cyan);
 }
 
+.hidden{
+  display: none;
+}
+
 .head-actions {
   display: flex;
   flex-wrap: wrap;
