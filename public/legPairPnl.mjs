@@ -76,14 +76,15 @@ function terminalFloatLegPxFromRows(rowsAsc, slug, leg) {
  * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  * @property {number} [feeUsd] — 固定手续费（USD）。只要触发买入（最终处于 closed/float），统一计入：netUsd = 原netUsd − feeUsd（即盈利扣手续费、亏损叠加手续费）。
  * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
- * @property {boolean} [pairBuyPriorAbsClLeBuyAbs] — 为真时：候选买点须具备有效 |现货−开盘|；且自盘首至买点前所有具备有效差价的 tick 上，|现货−开盘| 均不得 **严格大于** 买点当刻的 |现货−开盘|，否则否决该候选并继续向后扫描；买点无有效差价则否决该候选。默认假。
+ * @property {boolean} [pairBuyPriorAbsClLeBuyAbs] — 为真时：候选买点须具备有效 |现货−开盘|；且对盘首至买点前每一具备有效差价的 tick，须满足 买点 |差价| ≥ `pairBuyPriorAbsClMultiplier` × 先前 |差价|（默认倍数 1，即先前任一不得大于买点）；否则否决该候选并继续向后扫描。默认假。
+ * @property {number} [pairBuyPriorAbsClMultiplier] — 与上一项同时使用时生效；≥1，默认 1；校验容忍约 1e−6 USD。
  */
 
 /**
  * @param {unknown[]} rows
  * @param {string | null} slug
  * @param {LegPairPnlOpts} [opts]
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" }} P_entry 为买入价（默认：触发买点当刻已买侧 mid；开异动链上条件且命中右端点时为异动结束当刻已买侧 mid）。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" }} P_entry 为盈亏基数：**高价买与低价买规则相同**——优先取距开盘秒数 ≥ 买点秒+1 的首条采样上已买侧 mid；若无则回退买点当刻已买侧 mid；若上述采样价 **低于** 页面「买入限价」则入账价 **按买入限价**（不低于限价计入）。再不行则用买入限价本身。止盈/止损扫描自所选入账采样对应 tick 之后开始。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
  */
 export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N, opts = {}) {
   if (!slug || typeof slug !== "string") {
@@ -123,6 +124,15 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     vPriorLeBuy === 1 ||
     vPriorLeBuy === "1" ||
     vPriorLeBuy === "true";
+  const priorMultRaw = num(opts.pairBuyPriorAbsClMultiplier);
+  let priorAbsClMultiplier = 1;
+  if (priorAbsClLeBuyAbs) {
+    if (priorMultRaw != null && priorMultRaw > 0) {
+      priorAbsClMultiplier = Math.min(1000, Math.max(1, priorMultRaw));
+    }
+  }
+  /** USD 比较容差（Chainlink 差价为美元量级） */
+  const priorClUsdTol = 1e-6;
 
   /** 窗口内首条非空 Chainlink 现货，作「开盘」参考（避免首 tick 无 btc 导致全程无差价） */
   let openBtc = null;
@@ -212,15 +222,15 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       if (priorAbsClLeBuyAbs) {
         const buyAbs = p.absCl;
         if (buyAbs == null) continue;
-        let priorExceeds = false;
+        let priorViolates = false;
         for (let k = 0; k < i; k++) {
           const a = points[k].absCl;
-          if (a != null && a > buyAbs + 1e-12) {
-            priorExceeds = true;
+          if (a != null && buyAbs + priorClUsdTol < priorAbsClMultiplier * a) {
+            priorViolates = true;
             break;
           }
         }
-        if (priorExceeds) continue;
+        if (priorViolates) continue;
       }
 
       buyIdx = i;
@@ -242,15 +252,15 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       if (priorAbsClLeBuyAbs) {
         const buyAbs = p.absCl;
         if (buyAbs == null) continue;
-        let priorExceeds = false;
+        let priorViolates = false;
         for (let k = 0; k < i; k++) {
           const a = points[k].absCl;
-          if (a != null && a > buyAbs + 1e-12) {
-            priorExceeds = true;
+          if (a != null && buyAbs + priorClUsdTol < priorAbsClMultiplier * a) {
+            priorViolates = true;
             break;
           }
         }
-        if (priorExceeds) continue;
+        if (priorViolates) continue;
       }
 
       buyIdx = i;
@@ -264,11 +274,41 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const pBuy = points[buyIdx];
   const legUp = highBuyMode ? highBuyLeg === "up" : pBuy.u <= P_buyLimit;
   const leg = legUp ? "up" : "down";
-  /** 默认：入账价 = 触发买点当刻已买侧 mid（实际买入价）；开异动且命中右端点：改为异动结束当刻该侧 mid */
+  const eps = 1e-12;
   const pxAtBuyTick = leg === "up" ? pBuy.u : pBuy.d;
-  let P_entry =
-    pxAtBuyTick != null && pxAtBuyTick > 0 && pxAtBuyTick < 1 - 1e-12 ? pxAtBuyTick : P_buyLimit;
-  let t_entry = pBuy.sec;
+  const buyPxOk = pxAtBuyTick != null && pxAtBuyTick > 0 && pxAtBuyTick < 1 - eps;
+  const t_signal = pBuy.sec;
+  let entryIdx = buyIdx;
+  for (let k = 0; k < points.length; k++) {
+    if (points[k].sec >= t_signal + 1 - eps) {
+      entryIdx = k;
+      break;
+    }
+  }
+  const pEntry = points[entryIdx];
+  const pxAtEntryTick = leg === "up" ? pEntry.u : pEntry.d;
+  const entryPxOk =
+    pxAtEntryTick != null && pxAtEntryTick > 0 && pxAtEntryTick < 1 - eps;
+  /** 原始入账采样：+1s 已买侧 mid；否则回退买点当刻 mid */
+  let rawEntryPx;
+  let t_entry;
+  let exitStartJ;
+  if (entryIdx !== buyIdx && entryPxOk) {
+    rawEntryPx = pxAtEntryTick;
+    t_entry = pEntry.sec;
+    exitStartJ = entryIdx + 1;
+  } else {
+    rawEntryPx = buyPxOk ? pxAtBuyTick : null;
+    t_entry = pBuy.sec;
+    exitStartJ = buyIdx + 1;
+  }
+  /** 高价买 / 低价买一致：后一秒（或回退）采样价低于买入限价则按买入限价入账 */
+  let P_entry;
+  if (rawEntryPx != null && rawEntryPx > 0 && rawEntryPx < 1 - eps) {
+    P_entry = rawEntryPx + eps < P_buyLimit ? P_buyLimit : rawEntryPx;
+  } else {
+    P_entry = P_buyLimit;
+  }
   if (P_entry <= 0) {
     return { code: "bad_entry", netUsd: 0 };
   }
@@ -279,7 +319,6 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   /** @type {number | undefined} */
   let exitPrice;
 
-  const eps = 1e-12;
   /** 止损价（绝对 USD，0~1）。仅看买入腿 mid */
   const stopLinePx = stopOn ? stopPx : null;
 
@@ -287,7 +326,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   let firstStopJ = -1;
   let firstLimitJ = -1;
 
-  for (let j = buyIdx + 1; j < points.length; j++) {
+  for (let j = exitStartJ; j < points.length; j++) {
     const q = points[j];
     if (q.sec > WINDOW_EFFECTIVE_MAX_SEC) break;
     /** 仅已买入侧 mid；与另一侧无关 */

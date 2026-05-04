@@ -624,10 +624,16 @@ const calcPairHighBuyNoAboveBefore = document.getElementById(
 const calcPairBuyPriorAbsClLeBuyAbs = document.getElementById(
   "calc-pair-buy-prior-abs-cl-le-buy-abs",
 );
+const calcPairBuyPriorAbsClMult = document.getElementById("calc-pair-buy-prior-abs-cl-mult");
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
 const calcPairFixedLossUsd = document.getElementById("calc-pair-fixed-loss-usd");
 const calcFeeUsd = document.getElementById("calc-fee-usd");
+
+function syncPriorAbsClMultUi() {
+  if (!calcPairBuyPriorAbsClMult) return;
+  calcPairBuyPriorAbsClMult.disabled = !calcPairBuyPriorAbsClLeBuyAbs?.checked;
+}
 
 function setCalcBatchSummary(text) {
   if (!calcBatchSummary) return;
@@ -976,11 +982,17 @@ function readLegPairOptsFromForm() {
   if (feeForm != null && feeForm > 0) {
     feeUsd = Math.max(0, Math.min(9_999_999, feeForm));
   }
+  const multRaw = num(calcPairBuyPriorAbsClMult?.value);
+  let pairBuyPriorAbsClMultiplier = 1;
+  if (multRaw != null && multRaw > 0) {
+    pairBuyPriorAbsClMultiplier = Math.min(1000, Math.max(1, multRaw));
+  }
   return {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross: calcPairHighBuyNoAboveBefore?.checked !== false,
     pairBuyPriorAbsClLeBuyAbs: Boolean(calcPairBuyPriorAbsClLeBuyAbs?.checked),
+    pairBuyPriorAbsClMultiplier,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1041,6 +1053,7 @@ function collectCalcParamsForSave() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairBuyPriorAbsClLeBuyAbs,
+    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1056,6 +1069,7 @@ function collectCalcParamsForSave() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairBuyPriorAbsClLeBuyAbs,
+    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1102,6 +1116,13 @@ function applyCalcPresetParams(params) {
       p.pairBuyPriorAbsClLeBuyAbs === "1" ||
       p.pairBuyPriorAbsClLeBuyAbs === "true";
   }
+  if (calcPairBuyPriorAbsClMult) {
+    const m = num(p.pairBuyPriorAbsClMultiplier);
+    const v =
+      m != null && m > 0 ? Math.min(1000, Math.max(1, m)) : 1;
+    calcPairBuyPriorAbsClMult.value = String(v);
+  }
+  syncPriorAbsClMultUi();
   if (calcAdvancedPairSell) {
     calcAdvancedPairSell.checked =
       p.advancedPairSell === true ||
@@ -1168,13 +1189,17 @@ function rebuildCalcPresetOptions(filterRaw) {
       pp.advancedPairSell === "true"
         ? "adv卖"
         : "";
-    const priorClLeBuy =
+    const priorOn =
       pp.pairBuyPriorAbsClLeBuyAbs === true ||
       pp.pairBuyPriorAbsClLeBuyAbs === 1 ||
       pp.pairBuyPriorAbsClLeBuyAbs === "1" ||
-      pp.pairBuyPriorAbsClLeBuyAbs === "true"
-        ? "买点前|CL|≤买点"
-        : "";
+      pp.pairBuyPriorAbsClLeBuyAbs === "true";
+    let priorClLeBuy = "";
+    if (priorOn) {
+      const pm = num(pp.pairBuyPriorAbsClMultiplier);
+      const n = pm != null && pm > 0 ? Math.min(1000, Math.max(1, pm)) : 1;
+      priorClLeBuy = `买点|CL|≥先×${n}`;
+    }
     const bits = [`${pr.name} — 买 ${pb} · [${t0s},${t1s}]s`];
     if (clBuyS) bits.push(clBuyS);
     if (priorClLeBuy) bits.push(priorClLeBuy);
@@ -1317,6 +1342,11 @@ if (calcPresetSave) {
     void saveCalcPreset();
   });
 }
+if (calcPairBuyPriorAbsClLeBuyAbs) {
+  calcPairBuyPriorAbsClLeBuyAbs.addEventListener("change", syncPriorAbsClMultUi);
+}
+syncPriorAbsClMultUi();
+
 if (calcPresetDelete) {
   calcPresetDelete.addEventListener("click", () => {
     void deleteCalcPreset();
@@ -1383,7 +1413,7 @@ function applySingleCalcResult(r, params) {
         : "";
     const entryNote =
       Math.abs(r.P_entry - P_buyLimit) > 1e-8
-        ? " · 与买入限价不同（按买点实际 mid）"
+        ? " · 与买入限价不同（入账：买点后一秒已买侧 mid，若无则买点当刻；低于限价则按限价）"
         : "";
     const profit = Number.isFinite(nu) ? nu : 0;
     const kind = profit >= 0 ? "profit" : "loss";
@@ -1415,6 +1445,7 @@ async function runLegPairCalculator() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairBuyPriorAbsClLeBuyAbs,
+    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1425,6 +1456,7 @@ async function runLegPairCalculator() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairBuyPriorAbsClLeBuyAbs,
+    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1475,6 +1507,7 @@ async function runLegPairCalculator() {
         pairBuyMaxAbsChainlinkUsd,
         pairHighBuyNoAboveBeforeCross,
         pairBuyPriorAbsClLeBuyAbs,
+        pairBuyPriorAbsClMultiplier,
         advancedPairSell,
         pairStopPriceUsd,
         pairFixedLossUsd,
