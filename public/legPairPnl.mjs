@@ -1,5 +1,6 @@
 /**
  * 单侧盈亏测算核心（浏览器与 Node 共用：Node 自 `public/legPairPnl.mjs` 导入）。
+ * `up_mid`/`down_mid` 与 ChartsBTC 服务端一致：按秒末 mid 与 0.5 比较分档，记入卖一极小或卖一极大（非算术 mid）。
  */
 
 export const WINDOW_SEC = 300;

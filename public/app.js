@@ -1,5 +1,5 @@
 /**
- * 通过 WSS /ws/chart 订阅图表数据（快照 + 实时增量 + health 推送），用 Chart.js 绘制 Up mid / Down mid（左轴）与 Chainlink 差价（右轴）。
+ * 通过 WSS /ws/chart 订阅图表数据（快照 + 实时增量 + health 推送），用 Chart.js 绘制 Up/Down 序列（左轴；服务端按秒末 mid 分档写入卖一极小/极大至 up_mid/down_mid）与 Chainlink 差价（右轴）。
  * 仅 market-windows 与刷新用 HTTP；支持按市场 slug 切换归档时间段。
  */
 
@@ -103,7 +103,7 @@ const chart = new Chart(chartCanvas, {
   data: {
     datasets: [
       {
-        label: "Up mid",
+        label: "Up 卖一",
         borderColor: "rgba(74, 222, 128, 0.95)",
         backgroundColor: "rgba(74, 222, 128, 0.08)",
         yAxisID: "y",
@@ -113,7 +113,7 @@ const chart = new Chart(chartCanvas, {
         tension: 0.08,
       },
       {
-        label: "Down mid",
+        label: "Down 卖一",
         borderColor: "rgba(248, 113, 113, 0.95)",
         backgroundColor: "rgba(248, 113, 113, 0.06)",
         yAxisID: "y",
@@ -172,7 +172,7 @@ const chart = new Chart(chartCanvas, {
         position: "left",
         min: 0,
         max: 1,
-        title: { display: true, text: "隐含价格 (mid)", color: "#9ca3af" },
+        title: { display: true, text: "隐含价格 (分档卖一)", color: "#9ca3af" },
         grid: { color: "rgba(255,255,255,0.06)" },
         ticks: { color: "#8a8f98" },
       },

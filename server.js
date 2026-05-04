@@ -133,10 +133,11 @@ const book = createBookState();
 
 /**
  * 入库前 1 秒窗口内聚合 Polymarket 盘口采样（与 tickLoop 周期一致，默认 TICK_MS=1000）。
- * 规则（对 Up / Down 各自独立，用该秒内**最后一次**有效 mid 判定）：
- * - mid < 0.5 → 记入值 = 该秒内**卖一（best ask）**的**最小值**
- * - mid > 0.5 → 记入值 = 该秒内**买一（best bid）**的**最大值**
- * - mid === 0.5 → 记入值 = 当前最后一档 bid/ask 的算术均价（兜底）
+ * 规则（对 Up / Down 各自独立）：用该秒内**最后一次**有效 mid **仅作分档**，记入 `up_mid`/`down_mid` 的均为**卖一（best ask）**侧，不取算术 mid、高价区也不取买一：
+ * - 分档 mid < 0.5 → 记入值 = 该秒内卖一的**最小值**
+ * - 分档 mid > 0.5 → 记入值 = 该秒内卖一的**最大值**
+ * - 分档 mid === 0.5 → 记入值 = 该秒**最后一次**快照的卖一；无则回退该秒卖一 min / 当前盘口 bestAsk / bid+ask 均价 / 盘口 mid
+ * 无有效分档 mid 时：优先最后一次卖一，否则同上的卖一 min、bestAsk、均价、盘口 mid。
  * `up_bid`/`up_ask`/`down_*` 取该秒内**最后一次**快照；`up_mid`/`down_mid` 为上述记入值。
  */
 function createEmptySecondBuffer() {
@@ -187,33 +188,51 @@ function finalizeSideForDb(side, fallback) {
   const lm =
     side.lastMid ?? (fallback.mid != null && Number.isFinite(Number(fallback.mid)) ? Number(fallback.mid) : null);
 
+  const askMin =
+    side.asks.length > 0
+      ? Math.min(...side.asks)
+      : fallback.bestAsk != null && Number.isFinite(Number(fallback.bestAsk))
+        ? Number(fallback.bestAsk)
+        : la != null && Number.isFinite(la)
+          ? la
+          : null;
+  const askMax =
+    side.asks.length > 0
+      ? Math.max(...side.asks)
+      : fallback.bestAsk != null && Number.isFinite(Number(fallback.bestAsk))
+        ? Number(fallback.bestAsk)
+        : la != null && Number.isFinite(la)
+          ? la
+          : null;
+
   let midOut = null;
   if (lm != null && Number.isFinite(lm)) {
     if (lm < 0.5) {
-      if (side.asks.length) midOut = Math.min(...side.asks);
-      else if (fallback.bestAsk != null && Number.isFinite(Number(fallback.bestAsk))) {
-        midOut = Number(fallback.bestAsk);
-      } else midOut = lm;
+      midOut = askMin ?? lm;
     } else if (lm > 0.5) {
-      if (side.bids.length) midOut = Math.max(...side.bids);
-      else if (fallback.bestBid != null && Number.isFinite(Number(fallback.bestBid))) {
-        midOut = Number(fallback.bestBid);
-      } else midOut = lm;
+      midOut = askMax ?? lm;
     } else {
       midOut =
-        lb != null && la != null && Number.isFinite(lb) && Number.isFinite(la)
-          ? (lb + la) / 2
-          : fallback.mid != null && Number.isFinite(Number(fallback.mid))
-            ? Number(fallback.mid)
-            : null;
+        la != null && Number.isFinite(la)
+          ? la
+          : askMin ??
+            askMax ??
+            (lb != null && la != null && Number.isFinite(lb) && Number.isFinite(la)
+              ? (lb + la) / 2
+              : fallback.mid != null && Number.isFinite(Number(fallback.mid))
+                ? Number(fallback.mid)
+                : null);
     }
   } else {
     midOut =
-      lb != null && la != null && Number.isFinite(lb) && Number.isFinite(la)
-        ? (lb + la) / 2
-        : fallback.mid != null && Number.isFinite(Number(fallback.mid))
-          ? Number(fallback.mid)
-          : null;
+      la != null && Number.isFinite(la)
+        ? la
+        : askMin ??
+          (lb != null && la != null && Number.isFinite(lb) && Number.isFinite(la)
+            ? (lb + la) / 2
+            : fallback.mid != null && Number.isFinite(Number(fallback.mid))
+              ? Number(fallback.mid)
+              : null);
   }
 
   return { bid: lb, ask: la, mid: midOut };
