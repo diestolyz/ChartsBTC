@@ -76,6 +76,7 @@ function terminalFloatLegPxFromRows(rowsAsc, slug, leg) {
  * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  * @property {number} [feeUsd] — 固定手续费（USD）。只要触发买入（最终处于 closed/float），统一计入：netUsd = 原netUsd − feeUsd（即盈利扣手续费、亏损叠加手续费）。
  * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
+ * @property {boolean} [pairBuyPriorAbsClLeBuyAbs] — 为真时：候选买点须具备有效 |现货−开盘|；且自盘首至买点前所有具备有效差价的 tick 上，|现货−开盘| 均不得 **严格大于** 买点当刻的 |现货−开盘|，否则否决该候选并继续向后扫描；买点无有效差价则否决该候选。默认假。
  */
 
 /**
@@ -115,6 +116,13 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     vNoAbove === false || vNoAbove === 0 || vNoAbove === "0" || vNoAbove === "false"
       ? false
       : true;
+
+  const vPriorLeBuy = opts.pairBuyPriorAbsClLeBuyAbs;
+  const priorAbsClLeBuyAbs =
+    vPriorLeBuy === true ||
+    vPriorLeBuy === 1 ||
+    vPriorLeBuy === "1" ||
+    vPriorLeBuy === "true";
 
   /** 窗口内首条非空 Chainlink 现货，作「开盘」参考（避免首 tick 无 btc 导致全程无差价） */
   let openBtc = null;
@@ -201,6 +209,20 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
         continue;
       }
 
+      if (priorAbsClLeBuyAbs) {
+        const buyAbs = p.absCl;
+        if (buyAbs == null) continue;
+        let priorExceeds = false;
+        for (let k = 0; k < i; k++) {
+          const a = points[k].absCl;
+          if (a != null && a > buyAbs + 1e-12) {
+            priorExceeds = true;
+            break;
+          }
+        }
+        if (priorExceeds) continue;
+      }
+
       buyIdx = i;
       highBuyLeg = side;
       break;
@@ -216,6 +238,21 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       if (maxAbsChainlinkOn && p.absCl != null && p.absCl >= maxClUsd - 1e-12) {
         continue;
       }
+
+      if (priorAbsClLeBuyAbs) {
+        const buyAbs = p.absCl;
+        if (buyAbs == null) continue;
+        let priorExceeds = false;
+        for (let k = 0; k < i; k++) {
+          const a = points[k].absCl;
+          if (a != null && a > buyAbs + 1e-12) {
+            priorExceeds = true;
+            break;
+          }
+        }
+        if (priorExceeds) continue;
+      }
+
       buyIdx = i;
       break;
     }

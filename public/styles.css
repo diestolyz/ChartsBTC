@@ -79,6 +79,15 @@ h1 {
   gap: 12px;
 }
 
+.footer-note{
+  margin-top: 24px;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+}
+
 .field {
   display: flex;
   flex-direction: column;

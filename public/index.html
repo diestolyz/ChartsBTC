@@ -42,7 +42,6 @@
               </button>
             </div>
           </label>
-          <button type="button" class="btn btn--ghost" id="logout-btn" hidden>退出登录</button>
         </div>
       </header>
 
@@ -196,6 +195,12 @@
                   <input type="checkbox" id="calc-pair-high-buy-no-above-before" checked />
                   <span>高价买（买入限价 &gt; 0.5）：买点前该侧 mid 不得高于限价</span>
                 </label>
+                <label class="pair-calculator__check">
+                  <input type="checkbox" id="calc-pair-buy-prior-abs-cl-le-buy-abs" />
+                  <span
+                    title="pairBuyPriorAbsClLeBuyAbs：买点前凡有有效 Chainlink 差价的 tick，|现货−开盘| 均须 ≤ 买点当刻 |现货−开盘|；任一先前更大则否决该候选并继续向后找买点。"
+                  >买点之前任一时刻 |BTC 差价|（涨跌均取绝对值）不得大于买点当刻 |BTC 差价|；否则跳过该买点继续向后扫描</span>
+                </label>
               </div>
             </div>
             <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-sell">
@@ -299,7 +304,9 @@
         ></p>
         <pre class="pair-calculator__detail mono" id="calc-result"></pre>
       </section>
-
+      <div class="footer-note">
+        <button type="button" class="btn btn--ghost" id="logout-btn" hidden>退出登录</button>
+      </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
