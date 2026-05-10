@@ -1131,25 +1131,29 @@ async function fetchTicksRows(q) {
 }
 
 /**
- * 一次取多盘 ticks，每盘最多 `perSlugLimit` 条（按 ts_ms 升序）。需 MySQL 8+ / MariaDB 10.2+ 窗口函数。
+ * 一次取多盘 ticks：每盘合并「时间最早的一半限额 + 时间最晚的一半限额」（去重后按 ts_ms 升序）。
+ * 仅用升序取前 N 条会丢掉窗口末尾（如期末 299s），导致单侧盈亏「未平仓结算」读不到期末价。
+ * 需 MySQL 8+ / MariaDB 10.2+ 窗口函数。
  * @param {string[]} slugs
  * @param {number} perSlugLimit
  */
 async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
   if (!pool || !slugs.length) return [];
   const lim = Math.min(50_000, Math.max(1, Math.floor(perSlugLimit)));
+  const headTailN = Math.ceil(lim / 2);
   const placeholders = slugs.map(() => "?").join(",");
   const [rows] = await pool.query(
-    `SELECT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
+    `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
      FROM (
        SELECT t.ts_ms, t.market_slug, t.up_bid, t.up_ask, t.up_mid, t.down_bid, t.down_ask, t.down_mid, t.btc_usd,
-         ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn
+         ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn_a,
+         ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms DESC) AS rn_d
        FROM pm_book_ticks t
        WHERE t.market_slug IN (${placeholders})
      ) z
-     WHERE z.rn <= ?
+     WHERE z.rn_a <= ? OR z.rn_d <= ?
      ORDER BY z.market_slug ASC, z.ts_ms ASC`,
-    [...slugs, lim],
+    [...slugs, headTailN, headTailN],
   );
   return rows;
 }

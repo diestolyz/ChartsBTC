@@ -6,7 +6,7 @@
 export const WINDOW_SEC = 300;
 
 /** 盘末若干秒盘口常失真：`computeLegPnlFromRows` 等测算不采纳 `sec` 严格大于此值的采样；图表仍按整窗 `WINDOW_SEC` 展示。 */
-export const WINDOW_CHART_TRIM_END_SEC = 13;
+export const WINDOW_CHART_TRIM_END_SEC = 16;
 export const WINDOW_EFFECTIVE_MAX_SEC = WINDOW_SEC - WINDOW_CHART_TRIM_END_SEC;
 
 export function num(v) {
@@ -60,7 +60,8 @@ function terminalFloatLegPxFromRows(rowsAsc, slug, leg) {
     const u = num(r.up_mid);
     const d = num(r.down_mid);
     const px = leg === "up" ? u : d;
-    if (px == null || !(px > 0 && px < 1 - eps)) continue;
+    /** 盘末 winning 侧 mid 可能为 1；仍参与 >0.5 结算判定 */
+    if (px == null || !(px > 0 && px <= 1 + eps)) continue;
     if (!tailPick || sec > tailPick.sec) tailPick = { sec, px };
   }
   return tailPick;
