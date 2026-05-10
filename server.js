@@ -79,6 +79,13 @@ const DB_USER = process.env.DB_USER || "poly";
 const DB_PASSWORD = process.env.DB_PASSWORD || "poly";
 const DB_NAME = process.env.DB_NAME || "poly";
 
+/** 历史盘口与聚合表保留天数；按「滚动 N×24h」截断，每日定时清理一次（见 DB_RETENTION_SWEEP_MS） */
+const DB_RETENTION_DAYS = Math.max(1, Math.floor(Number(process.env.DB_RETENTION_DAYS) || 30));
+const DB_RETENTION_SWEEP_MS = Math.max(
+  60_000,
+  Number(process.env.DB_RETENTION_SWEEP_MS) || 24 * 60 * 60 * 1000,
+);
+
 const TICK_MS = Math.max(200, Number(process.env.TICK_MS) || 1000);
 const GAMMA_REFRESH_MS = Math.max(3000, Number(process.env.GAMMA_REFRESH_MS) || 10000);
 
@@ -596,6 +603,30 @@ async function ensureDb() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
   await migrateCalcPresetsFromJsonIfNeeded();
+}
+
+async function pruneOldDbRows() {
+  if (!pool) return;
+  const cutoff = Date.now() - DB_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  try {
+    const [tickHdr] = await pool.execute(`DELETE FROM pm_book_ticks WHERE ts_ms < ?`, [cutoff]);
+    const [spreadHdr] = await pool.execute(`DELETE FROM btc_abs_spread_5m WHERE window_end_ms < ?`, [cutoff]);
+    const ticks =
+      tickHdr && typeof tickHdr === "object" && "affectedRows" in tickHdr
+        ? Number(/** @type {{ affectedRows: number }} */ (tickHdr).affectedRows)
+        : 0;
+    const spreads =
+      spreadHdr && typeof spreadHdr === "object" && "affectedRows" in spreadHdr
+        ? Number(/** @type {{ affectedRows: number }} */ (spreadHdr).affectedRows)
+        : 0;
+    if (ticks > 0 || spreads > 0) {
+      console.log(
+        `[charts-btc] DB retention (${DB_RETENTION_DAYS}d): deleted pm_book_ticks=${ticks}, btc_abs_spread_5m=${spreads}`,
+      );
+    }
+  } catch (e) {
+    console.error("[charts-btc] DB retention prune failed", e);
+  }
 }
 
 function windowStartMsFromSlug(slug) {
@@ -1870,6 +1901,11 @@ async function main() {
     console.error("[charts-btc] MySQL init failed — is MySQL running with DB", DB_NAME, "?", e);
     process.exit(1);
   });
+
+  await pruneOldDbRows();
+  setInterval(() => {
+    pruneOldDbRows().catch((e) => console.error("[charts-btc] DB retention", e));
+  }, DB_RETENTION_SWEEP_MS);
 
   await syncServerTime();
   setInterval(syncServerTime, 5 * 60_000);
