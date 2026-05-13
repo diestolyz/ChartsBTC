@@ -1395,6 +1395,56 @@ api.post("/calc-batch", async (req, res) => {
 });
 
 /**
+ * 轻量时间线：仅从 `btc_abs_spread_5m` 取 slug + 窗口起止，用于下拉「标题」懒加载（避免对 `pm_book_ticks` 全表 GROUP BY）。
+ * 无行时回退为完整 `/market-windows` 聚合（冷启动 / 尚未写入 spread 表）。
+ */
+api.get("/market-windows/timeline", async (req, res) => {
+  if (!pool) {
+    res.status(503).json({ error: "database_unavailable" });
+    return;
+  }
+  const safeLimit = clampWindowListLimit(req.query.limit ?? 96);
+  try {
+    const [lite] = await pool.query(
+      `SELECT market_slug AS slug,
+              window_start_ms AS min_ts_ms,
+              window_end_ms AS max_ts_ms
+       FROM btc_abs_spread_5m
+       ORDER BY window_start_ms DESC
+       LIMIT ${safeLimit}`,
+    );
+    let rows = Array.isArray(lite) ? lite : [];
+    if (!rows.length) {
+      const [full] = await pool.query(
+        `SELECT w.slug,
+                w.min_ts_ms,
+                w.max_ts_ms,
+                w.tick_count,
+                s.avg_abs_spread_usd,
+                s.sample_count AS btc_sample_count
+         FROM (
+           SELECT market_slug AS slug,
+                  MIN(ts_ms) AS min_ts_ms,
+                  MAX(ts_ms) AS max_ts_ms,
+                  COUNT(*) AS tick_count
+           FROM pm_book_ticks
+           GROUP BY market_slug
+         ) w
+         LEFT JOIN btc_abs_spread_5m s
+           ON s.market_slug = w.slug
+         ORDER BY w.max_ts_ms DESC
+         LIMIT ${Math.min(safeLimit, 120)}`,
+      );
+      rows = Array.isArray(full) ? full : [];
+    }
+    res.json({ windows: rows });
+  } catch (e) {
+    console.error("[charts-btc] /api/market-windows/timeline", e);
+    res.status(500).json({ error: String(e instanceof Error ? e.message : e) });
+  }
+});
+
+/**
  * 已入库的各 5 分钟市场（按 slug 聚合），用于前端切换归档图表。
  */
 api.get("/market-windows", async (req, res) => {

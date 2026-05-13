@@ -32,8 +32,8 @@
               </button>
               <select
                 id="market-select"
-                aria-label="切换 5 分钟市场（条数与「时间跨度」输入一致）"
-                title="归档市场数量 = 上方「时间跨度」数值（每个 5 分钟一盘）"
+                aria-label="切换 5 分钟归档时段（首次点开下拉时加载时间线，不含 tick；选盘后经 WSS 加载该盘数据）"
+                title="时间线懒加载；选盘后加载对应市场图表"
               >
                 <option value="">当前盘（跟随实时）</option>
               </select>

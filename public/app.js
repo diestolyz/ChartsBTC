@@ -1,6 +1,6 @@
 /**
  * 通过 WSS /ws/chart 订阅图表数据（快照 + 实时增量 + health 推送），用 Chart.js 绘制 Up/Down 序列（左轴；服务端按秒末 mid 分档写入卖一极小/极大至 up_mid/down_mid）与 Chainlink 差价（右轴）。
- * 仅 market-windows 与刷新用 HTTP；支持按市场 slug 切换归档时间段。
+ * 仅 `/api/market-windows/timeline`（懒加载）、`/api/ui-settings` 与刷新用 HTTP；图表主路径为 WSS。
  */
 
 import {
@@ -29,6 +29,10 @@ const connLabel = document.getElementById("conn-label");
 let activeSlug = null;
 /** 非空 = 查看该 slug 的归档；空 = 跟随当前服务盘 */
 let chartSlugOverride = null;
+/** 归档下拉时间线是否已成功拉取（懒加载，仅 `/api/market-windows/timeline`） */
+let marketTimelineReady = false;
+/** @type {Promise<void> | null} */
+let marketTimelineLoadPromise = null;
 /** 当前窗口开盘参考（Gamma / RTDS；仅「跟随实时」时使用） */
 let chainlinkOpenUsd = null;
 /** @type {{ btcDeltaUsd?: number | null } | null} */
@@ -47,7 +51,7 @@ let chartStatusLine = "";
 
 /** 剩余 ≤ 此毫秒数视为「临近结束」，排程换盘刷新 */
 const ROLLOVER_NEAR_END_MS = 5000;
-/** 临近结束后延迟多久执行 loadMarketWindows + 重订阅 */
+/** 临近结束后延迟多久执行时间线刷新 + 重订阅 */
 const ROLLOVER_REFRESH_AFTER_MS = 8000;
 /** 当前盘结束前临近窗口内触发，排程一次换盘刷新 */
 let rolloverRefreshTimer = null;
@@ -83,7 +87,7 @@ async function fetchAuthStatus() {
 function formatWindowOption(w) {
   const min = new Date(Number(w.min_ts_ms));
   const max = new Date(Number(w.max_ts_ms));
-  const n = Number(w.tick_count) || 0;
+  const n = Number(w.tick_count);
   const d0 = min.toLocaleString(undefined, {
     month: "numeric",
     day: "numeric",
@@ -95,7 +99,8 @@ function formatWindowOption(w) {
     minute: "2-digit",
     second: "2-digit",
   });
-  return `${d0} → ${t1} · ${n} 点`;
+  const tickPart = Number.isFinite(n) && n > 0 ? ` · ${n} 点` : "";
+  return `${d0} → ${t1}${tickPart}`;
 }
 
 const chart = new Chart(chartCanvas, {
@@ -285,7 +290,7 @@ function getTickLimit() {
   return Math.min(50000, Math.max(60, Number(limitInput.value) || 1800));
 }
 
-/** 与页头「时间跨度」一致：归档市场个数（5m 盘）、`/api/market-windows` 与「计算全量」的 windowsLimit。 */
+/** 与页头「时间跨度」一致：懒加载时间线条数、与「计算全量」的 windowsLimit（`/api/market-windows/timeline`）。 */
 function getArchivedMarketsLimit() {
   return Math.min(20000, Math.max(1, Math.floor(Number(limitInput?.value) || 400)));
 }
@@ -450,7 +455,7 @@ function applyHealthPayload(j) {
 }
 
 /**
- * 跟随实时盘时：距当前盘结束 ≤5s 则为本 slug 排程一次 8s 后刷新（拉 market-windows + 重订阅）。
+ * 跟随实时盘时：距当前盘结束 ≤5s 则为本 slug 排程一次 8s 后刷新（轻量时间线 + 重订阅）。
  */
 function maybeScheduleRolloverRefresh(j) {
   if (chartSlugOverride) return;
@@ -466,19 +471,20 @@ function maybeScheduleRolloverRefresh(j) {
   rolloverRefreshTimer = setTimeout(async () => {
     rolloverRefreshTimer = null;
     rolloverScheduledForSlug = null;
-    await loadMarketWindows();
+    await ensureMarketTimelineLoaded({ force: true });
     if (chartWs?.readyState === WebSocket.OPEN) sendChartSubscribe();
     else connectChartWs();
   }, ROLLOVER_REFRESH_AFTER_MS);
 }
 
-async function loadMarketWindows() {
-  if (!marketSelect) return;
+async function loadMarketTimelineOnce() {
+  if (!marketSelect) return false;
   const prev = chartSlugOverride ?? "";
   try {
-    const res = await fetch(`/api/market-windows?limit=${getArchivedMarketsLimit()}`, {
+    const res = await fetch(`/api/market-windows/timeline?limit=${getArchivedMarketsLimit()}`, {
       credentials: "same-origin",
     });
+    if (!res.ok) return false;
     const j = await res.json();
     const windows = Array.isArray(j.windows) ? j.windows : [];
     marketSelect.innerHTML = "";
@@ -501,9 +507,42 @@ async function loadMarketWindows() {
       chartSlugOverride = null;
     }
     updateMarketNavButtons();
+    return true;
   } catch {
-    /* keep existing select */
+    return false;
   }
+}
+
+/**
+ * 懒加载归档时间线（轻量 HTTP）；`force` 时清空后重拉（刷新 / 改时间跨度 / 换盘后）。
+ * @param {{ force?: boolean }} [options]
+ */
+async function ensureMarketTimelineLoaded(options = {}) {
+  const force = options.force === true;
+  if (!marketSelect) return;
+  if (force) {
+    marketTimelineReady = false;
+    marketTimelineLoadPromise = null;
+  }
+  if (marketTimelineReady) return;
+  if (!marketTimelineLoadPromise) {
+    marketTimelineLoadPromise = (async () => {
+      const ok = await loadMarketTimelineOnce();
+      marketTimelineReady = ok;
+    })().finally(() => {
+      marketTimelineLoadPromise = null;
+    });
+  }
+  await marketTimelineLoadPromise;
+}
+
+function bindMarketTimelineLazyLoad() {
+  if (!marketSelect) return;
+  const kick = () => {
+    void ensureMarketTimelineLoaded();
+  };
+  marketSelect.addEventListener("pointerdown", kick);
+  marketSelect.addEventListener("focus", kick);
 }
 
 async function loadUiSettingsIntoForm() {
@@ -536,7 +575,7 @@ async function saveUiTimeSpanToServer() {
 }
 
 /**
- * @param {{ saveTimeSpan?: boolean }} [options] 仅用户点「刷新」时传 `saveTimeSpan: true`，把当前时间跨度写入服务端
+ * @param {{ saveTimeSpan?: boolean; refreshMarketTimeline?: boolean }} [options] 仅用户点「刷新」时传 `saveTimeSpan: true`；`refreshMarketTimeline` 为真时重拉归档时间线下拉
  */
 async function refreshAll(options = {}) {
   if (options.saveTimeSpan === true) {
@@ -546,13 +585,15 @@ async function refreshAll(options = {}) {
       console.warn("[charts] 保存时间跨度失败", e);
     }
   }
-  await loadMarketWindows();
+  if (options.refreshMarketTimeline === true) {
+    await ensureMarketTimelineLoaded({ force: true });
+  }
   if (chartWs?.readyState === WebSocket.OPEN) sendChartSubscribe();
   else connectChartWs();
 }
 
 refreshBtn.addEventListener("click", () => {
-  void refreshAll({ saveTimeSpan: true });
+  void refreshAll({ saveTimeSpan: true, refreshMarketTimeline: true });
 });
 
 function updateMarketNavButtons() {
@@ -571,7 +612,8 @@ function syncChartFromMarketSelect() {
   else connectChartWs();
 }
 
-function stepMarketSelect(delta) {
+async function stepMarketSelect(delta) {
+  await ensureMarketTimelineLoaded();
   if (!marketSelect || marketSelect.options.length === 0) return;
   const n = marketSelect.options.length;
   let i = marketSelect.selectedIndex;
@@ -587,15 +629,15 @@ if (marketSelect) {
 }
 
 if (marketPrevBtn) {
-  marketPrevBtn.addEventListener("click", () => stepMarketSelect(-1));
+  marketPrevBtn.addEventListener("click", () => void stepMarketSelect(-1));
 }
 if (marketNextBtn) {
-  marketNextBtn.addEventListener("click", () => stepMarketSelect(1));
+  marketNextBtn.addEventListener("click", () => void stepMarketSelect(1));
 }
 
 limitInput.addEventListener("change", () => {
+  marketTimelineReady = false;
   if (chartWs?.readyState === WebSocket.OPEN) sendChartSubscribe();
-  void loadMarketWindows();
 });
 
 const calcPairPrice = document.getElementById("calc-pair-price");
@@ -1604,6 +1646,7 @@ async function bootstrap() {
   if (logoutBtn) logoutBtn.hidden = !auth.authEnabled;
   await loadUiSettingsIntoForm();
   await refreshAll();
+  bindMarketTimelineLazyLoad();
   try {
     await fetchCalcPresets();
   } catch (e) {
