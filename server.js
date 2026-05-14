@@ -1487,7 +1487,7 @@ api.get("/btc-abs-spread-5m", async (req, res) => {
 
 /**
  * @param {unknown} raw
- * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairHighBuyNoAboveBeforeCross: boolean, advancedPairSell: boolean, pairStopPriceUsd: number, pairFixedLossUsd: number, feeUsd: number } | null}
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairHighBuyNoAboveBeforeCross: boolean, advancedPairSell: boolean, pairStopPriceUsd: number, pairExitAbsClBelowUsd: number, pairFixedLossUsd: number, feeUsd: number } | null}
  */
 function normalizeCalcPresetParams(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -1543,6 +1543,9 @@ function normalizeLegPairOpts(raw) {
   if (stop == null || stop <= 0) stop = 0;
   stop = Math.max(0, Math.min(1, stop));
   if (stop >= 1) stop = 0.999999;
+  let exitAbsCl = num(o.pairExitAbsClBelowUsd);
+  if (exitAbsCl == null || exitAbsCl <= 0) exitAbsCl = 0;
+  else exitAbsCl = Math.max(1e-9, Math.min(9_999_999, exitAbsCl));
   let fixedLoss = num(o.pairFixedLossUsd);
   if (fixedLoss == null || fixedLoss <= 0) fixedLoss = 0;
   fixedLoss = Math.max(0, Math.min(9_999_999, fixedLoss));
@@ -1560,6 +1563,7 @@ function normalizeLegPairOpts(raw) {
     pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd: stop,
+    pairExitAbsClBelowUsd: exitAbsCl,
     pairFixedLossUsd: fixedLoss,
     feeUsd,
   };

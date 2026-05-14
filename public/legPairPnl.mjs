@@ -126,6 +126,7 @@ function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
  * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  * @property {number} [feeUsd] — 固定手续费（USD）。只要触发买入（最终处于 closed/float），统一计入：netUsd = 原netUsd − feeUsd（即盈利扣手续费、亏损叠加手续费）。
  * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
+ * @property {number} [pairExitAbsClBelowUsd] — &gt;0 时：买入后若某 tick 上 |现货−开盘| **严格小于** 该美元值则视为平仓，卖出价取该 tick 已买侧买一（无则用 mid）。与止损、限价按时间先后取最早；0 关闭。
  * @property {number} [chainlinkOpenUsd] — 与页头「开盘 BTC」（`#live-btc-open`）一致时传入（如归档快照 `btcOpenUsd`、实时 health 的开盘）。不传则用首条 tick 的 `btc_usd` 作开盘近似（与归档无官方开盘时页头一致）。
  */
 
@@ -133,7 +134,7 @@ function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
  * @param {unknown[]} rows
  * @param {string | null} slug
  * @param {LegPairPnlOpts} [opts]
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" }} P_entry 为盈亏基数：**高价买与低价买规则相同**——优先取距开盘秒数 ≥ 买点秒+1 的首条采样上已买侧 mid；若无则回退买点当刻已买侧 mid；若上述采样价 **低于** 页面「买入限价」则入账价 **按买入限价**（不低于限价计入）。再不行则用买入限价本身。止盈/止损扫描自所选入账采样对应 tick 之后开始。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "abs_cl" }} P_entry 为盈亏基数：**高价买与低价买规则相同**——优先取距开盘秒数 ≥ 买点秒+1 的首条采样上已买侧 mid；若无则回退买点当刻已买侧 mid；若上述采样价 **低于** 页面「买入限价」则入账价 **按买入限价**（不低于限价计入）。再不行则用买入限价本身。止盈/止损扫描自所选入账采样对应 tick 之后开始。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
  */
 export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N, opts = {}) {
   if (!slug || typeof slug !== "string") {
@@ -160,6 +161,10 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
 
   const feeRaw = num(opts.feeUsd);
   const feeUsd = feeRaw != null && feeRaw > 0 ? Math.max(0, Math.min(9_999_999, feeRaw)) : 0;
+
+  const exitAbsClRaw = num(opts.pairExitAbsClBelowUsd);
+  const exitAbsClOn = exitAbsClRaw != null && exitAbsClRaw > 0;
+  const exitAbsClThreshold = exitAbsClOn ? Math.max(1e-9, exitAbsClRaw) : null;
 
   const vNoAbove = opts.pairHighBuyNoAboveBeforeCross;
   const highBuyNoAboveBeforeCross =
@@ -319,7 +324,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   }
 
   let sellIdx = -1;
-  /** @type {"limit" | "stop" | undefined} */
+  /** @type {"limit" | "stop" | "abs_cl" | undefined} */
   let exitKind;
   /** @type {number | undefined} */
   let exitPrice;
@@ -330,6 +335,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   /** 各自首次触发的 tick 索引（整窗扫描，用于「先止盈后仍破止损」等回看） */
   let firstStopJ = -1;
   let firstLimitJ = -1;
+  let firstAbsClExitJ = -1;
   /** 卖价 1 / 0.01：不按限价在窗内止盈，固定未平仓并按 Chainlink 差价结算 */
   const suppressLimitExit = isSellPriceChainlinkFloatMode(P_sellTarget);
 
@@ -346,6 +352,14 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     if (stopOn && stopLinePx != null && px != null && px <= stopLinePx + eps) {
       if (firstStopJ < 0) firstStopJ = j;
     }
+    if (
+      exitAbsClOn &&
+      exitAbsClThreshold != null &&
+      q.absCl != null &&
+      q.absCl < exitAbsClThreshold - 1e-12
+    ) {
+      if (firstAbsClExitJ < 0) firstAbsClExitJ = j;
+    }
     if (!suppressLimitExit && px != null && px >= P_sellTarget) {
       if (firstLimitJ < 0) firstLimitJ = j;
     }
@@ -355,7 +369,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const lateStopAfterLimit =
     stopOn && firstStopJ >= 0 && firstLimitJ >= 0 && firstStopJ > firstLimitJ;
 
-  /** @type {"stop" | "limit" | null} */
+  /** @type {"stop" | "limit" | "abs_cl" | null} */
   let exitPickKind = null;
   let exitPickJ = -1;
 
@@ -363,11 +377,12 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     exitPickKind = "stop";
     exitPickJ = firstStopJ;
   } else {
-    /** 同 tick 内顺序与旧版逐 tick 一致：止损 → 限价 */
-    /** @type {{ j: number; kind: "stop" | "limit"; ord: number }[]} */
+    /** 同 tick 内顺序：止损 → |BTC差价|平仓 → 限价 */
+    /** @type {{ j: number; kind: "stop" | "limit" | "abs_cl"; ord: number }[]} */
     const cands = [];
     if (stopOn && firstStopJ >= 0) cands.push({ j: firstStopJ, kind: "stop", ord: 0 });
-    if (firstLimitJ >= 0) cands.push({ j: firstLimitJ, kind: "limit", ord: 1 });
+    if (exitAbsClOn && firstAbsClExitJ >= 0) cands.push({ j: firstAbsClExitJ, kind: "abs_cl", ord: 1 });
+    if (!suppressLimitExit && firstLimitJ >= 0) cands.push({ j: firstLimitJ, kind: "limit", ord: 2 });
     cands.sort((a, b) => a.j - b.j || a.ord - b.ord);
     const best = cands[0];
     if (best) {
@@ -389,6 +404,10 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     } else if (exitPickKind === "limit") {
       exitKind = "limit";
       exitPrice = P_sellTarget;
+    } else if (exitPickKind === "abs_cl") {
+      exitKind = "abs_cl";
+      exitPrice =
+        ref != null ? ref : px != null && px > 0 && px <= 1 + eps ? px : P_entry;
     }
   }
   const legLabel = leg === "up" ? "Up" : "Down";

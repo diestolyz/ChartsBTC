@@ -668,6 +668,7 @@ const calcPairHighBuyNoAboveBefore = document.getElementById(
 );
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
+const calcPairExitAbsClBelowUsd = document.getElementById("calc-pair-exit-abs-cl-below-usd");
 const calcPairFixedLossUsd = document.getElementById("calc-pair-fixed-loss-usd");
 const calcFeeUsd = document.getElementById("calc-fee-usd");
 
@@ -1027,6 +1028,11 @@ function readLegPairOptsFromForm() {
     pairStopPriceUsd = Math.max(0, Math.min(1, stopForm));
     if (pairStopPriceUsd >= 1) pairStopPriceUsd = 0.999999;
   }
+  const exitAbsClForm = num(calcPairExitAbsClBelowUsd?.value);
+  let pairExitAbsClBelowUsd = 0;
+  if (exitAbsClForm != null && exitAbsClForm > 0) {
+    pairExitAbsClBelowUsd = Math.max(1e-9, Math.min(9_999_999, exitAbsClForm));
+  }
   const fixedLossForm = num(calcPairFixedLossUsd?.value);
   let pairFixedLossUsd = 0;
   if (fixedLossForm != null && fixedLossForm > 0) {
@@ -1043,6 +1049,7 @@ function readLegPairOptsFromForm() {
     pairHighBuyNoAboveBeforeCross: calcPairHighBuyNoAboveBefore?.checked !== false,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairStopPriceUsd,
+    pairExitAbsClBelowUsd,
     pairFixedLossUsd,
     feeUsd,
   };
@@ -1102,6 +1109,7 @@ function collectCalcParamsForSave() {
     pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
+    pairExitAbsClBelowUsd,
     pairFixedLossUsd,
     feeUsd,
   } = p;
@@ -1116,6 +1124,7 @@ function collectCalcParamsForSave() {
     pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
+    pairExitAbsClBelowUsd,
     pairFixedLossUsd,
     feeUsd,
     fullBatch: Boolean(calcFullBatch?.checked),
@@ -1164,6 +1173,11 @@ function applyCalcPresetParams(params) {
     const s = num(p.pairStopPriceUsd);
     const v = s != null && s > 0 ? Math.max(0, Math.min(1, s)) : 0;
     calcPairStopPriceUsd.value = v > 0 ? String(v) : "0";
+  }
+  if (calcPairExitAbsClBelowUsd) {
+    const e = num(p.pairExitAbsClBelowUsd);
+    const v = e != null && e > 0 ? Math.max(1e-9, Math.min(9_999_999, e)) : 0;
+    calcPairExitAbsClBelowUsd.value = v > 0 ? String(v) : "0";
   }
   if (calcPairFixedLossUsd) {
     const fl = num(p.pairFixedLossUsd);
@@ -1219,9 +1233,13 @@ function rebuildCalcPresetOptions(filterRaw) {
       pp.advancedPairSell === "true"
         ? "adv卖"
         : "";
+    const exitAbs = num(pp.pairExitAbsClBelowUsd);
+    const exitAbsS =
+      exitAbs != null && exitAbs > 0 ? `卖|CL|<${exitAbs}` : "";
     const bits = [`${pr.name} — 买 ${pb} · [${t0s},${t1s}]s`];
     if (clBuyS) bits.push(clBuyS);
     if (adv) bits.push(adv);
+    if (exitAbsS) bits.push(exitAbsS);
     o.title = bits.join(" · ");
     calcPresetSelect.appendChild(o);
   }
@@ -1369,7 +1387,7 @@ if (calcPresetDelete) {
 
 /**
  * @param {ReturnType<typeof computeLegPnlFromRows>} r
- * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, advancedPairSell?: boolean, pairStopPriceUsd?: number, pairFixedLossUsd?: number }} params
+ * @param {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, advancedPairSell?: boolean, pairStopPriceUsd?: number, pairExitAbsClBelowUsd?: number, pairFixedLossUsd?: number }} params
  */
 function applySingleCalcResult(r, params) {
   const fmtUsd = fmtUsdCalc;
@@ -1398,7 +1416,12 @@ function applySingleCalcResult(r, params) {
     const profit = r.netUsd;
     const sign = profit >= 0 ? "+" : "";
     const exitKind = /** @type {{ exitKind?: string }} */ (r).exitKind;
-    const exitNote = exitKind === "stop" ? "（止损·mid 破线·固定比例）" : "";
+    const exitNote =
+      exitKind === "stop"
+        ? "（止损·mid 破线·固定比例）"
+        : exitKind === "abs_cl"
+          ? "（|BTC差价|低于阈值·该点平仓）"
+          : "";
     setCalcOutcome(
       profit >= 0 ? "profit" : "loss",
       `${profit >= 0 ? "盈利" : "亏损"} ${sign}${fmtUsd(profit)} USD`,
@@ -1467,6 +1490,7 @@ async function runLegPairCalculator() {
     pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
+    pairExitAbsClBelowUsd,
     pairFixedLossUsd,
     feeUsd,
   } = params;
@@ -1476,6 +1500,7 @@ async function runLegPairCalculator() {
     pairHighBuyNoAboveBeforeCross,
     advancedPairSell,
     pairStopPriceUsd,
+    pairExitAbsClBelowUsd,
     pairFixedLossUsd,
     feeUsd,
   };
@@ -1530,6 +1555,7 @@ async function runLegPairCalculator() {
         pairHighBuyNoAboveBeforeCross,
         advancedPairSell,
         pairStopPriceUsd,
+        pairExitAbsClBelowUsd,
         pairFixedLossUsd,
         feeUsd,
       }),
