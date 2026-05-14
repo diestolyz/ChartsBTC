@@ -164,6 +164,10 @@
           <div class="pair-calculator__adv-cols">
             <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-buy">
               <h4 class="pair-calculator__col-title" id="pair-calc-adv-buy">买</h4>
+              <label class="pair-calculator__check">
+                <input type="checkbox" id="calc-pair-high-buy-no-above-before" checked />
+                <span>高价买（买入限价 &gt; 0.5）：买点前该侧 mid 不得高于限价</span>
+              </label>
               <div class="pair-calculator__fields">
                 <label class="field">
                   允许买时 |BTC 差价| ≥（美元，区间下界）
@@ -189,29 +193,6 @@
                     value="0"
                     title="pairBuyMaxAbsChainlinkUsd：有数据时须严格小于该值；0 关闭上界"
                     aria-label="买入前校验：若大于 0，仅在当前 tick 的绝对 BTC 差价严格小于该美元值时才允许作为买点。0 表示不限制上界。"
-                  />
-                </label>
-                <label class="pair-calculator__check">
-                  <input type="checkbox" id="calc-pair-high-buy-no-above-before" checked />
-                  <span>高价买（买入限价 &gt; 0.5）：买点前该侧 mid 不得高于限价</span>
-                </label>
-                <label class="pair-calculator__check">
-                  <input type="checkbox" id="calc-pair-buy-prior-abs-cl-le-buy-abs" />
-                  <span
-                    title="买点当刻 |现货−开盘| 须 ≥ N × 买点之前任一有效 tick 的 |现货−开盘|；N=1 等价于先前任一时刻不得大于买点；勾选后生效。"
-                  >买点 |BTC 差价| 须 ≥ 先前任一有效 |BTC 差价| × 倍数；否则跳过该买点继续向后扫描</span>
-                </label>
-                <label class="field">
-                  倍数 N（≥1，默认 1；例 1.2）
-                  <input
-                    type="number"
-                    id="calc-pair-buy-prior-abs-cl-mult"
-                    min="1"
-                    max="1000"
-                    step="0.01"
-                    value="1"
-                    title="pairBuyPriorAbsClMultiplier：仅在上项勾选时参与校验；买点 |差价| ≥ N × 先前各有效 |差价|"
-                    aria-label="买点相对先前 BTC 差价绝对值的倍数下界，须大于等于 1；勾选上一项时生效。"
                   />
                 </label>
               </div>

@@ -126,8 +126,6 @@ function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
  * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  * @property {number} [feeUsd] — 固定手续费（USD）。只要触发买入（最终处于 closed/float），统一计入：netUsd = 原netUsd − feeUsd（即盈利扣手续费、亏损叠加手续费）。
  * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
- * @property {boolean} [pairBuyPriorAbsClLeBuyAbs] — 为真时：候选买点须具备有效 |现货−开盘|；且对盘首至买点前每一具备有效差价的 tick，须满足 买点 |差价| ≥ `pairBuyPriorAbsClMultiplier` × 先前 |差价|（默认倍数 1，即先前任一不得大于买点）；否则否决该候选并继续向后扫描。默认假。
- * @property {number} [pairBuyPriorAbsClMultiplier] — 与上一项同时使用时生效；≥1，默认 1；校验容忍约 1e−6 USD。
  * @property {number} [chainlinkOpenUsd] — 与页头「开盘 BTC」（`#live-btc-open`）一致时传入（如归档快照 `btcOpenUsd`、实时 health 的开盘）。不传则用首条 tick 的 `btc_usd` 作开盘近似（与归档无官方开盘时页头一致）。
  */
 
@@ -168,22 +166,6 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     vNoAbove === false || vNoAbove === 0 || vNoAbove === "0" || vNoAbove === "false"
       ? false
       : true;
-
-  const vPriorLeBuy = opts.pairBuyPriorAbsClLeBuyAbs;
-  const priorAbsClLeBuyAbs =
-    vPriorLeBuy === true ||
-    vPriorLeBuy === 1 ||
-    vPriorLeBuy === "1" ||
-    vPriorLeBuy === "true";
-  const priorMultRaw = num(opts.pairBuyPriorAbsClMultiplier);
-  let priorAbsClMultiplier = 1;
-  if (priorAbsClLeBuyAbs) {
-    if (priorMultRaw != null && priorMultRaw > 0) {
-      priorAbsClMultiplier = Math.min(1000, Math.max(1, priorMultRaw));
-    }
-  }
-  /** USD 比较容差（Chainlink 差价为美元量级） */
-  const priorClUsdTol = 1e-6;
 
   /** 窗口内首条非空 Chainlink 现货，作「开盘」参考（避免首 tick 无 btc 导致全程无差价） */
   let openBtc = null;
@@ -270,20 +252,6 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
         continue;
       }
 
-      if (priorAbsClLeBuyAbs) {
-        const buyAbs = p.absCl;
-        if (buyAbs == null) continue;
-        let priorViolates = false;
-        for (let k = 0; k < i; k++) {
-          const a = points[k].absCl;
-          if (a != null && buyAbs + priorClUsdTol < priorAbsClMultiplier * a) {
-            priorViolates = true;
-            break;
-          }
-        }
-        if (priorViolates) continue;
-      }
-
       buyIdx = i;
       highBuyLeg = side;
       break;
@@ -298,20 +266,6 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       }
       if (maxAbsChainlinkOn && p.absCl != null && p.absCl >= maxClUsd - 1e-12) {
         continue;
-      }
-
-      if (priorAbsClLeBuyAbs) {
-        const buyAbs = p.absCl;
-        if (buyAbs == null) continue;
-        let priorViolates = false;
-        for (let k = 0; k < i; k++) {
-          const a = points[k].absCl;
-          if (a != null && buyAbs + priorClUsdTol < priorAbsClMultiplier * a) {
-            priorViolates = true;
-            break;
-          }
-        }
-        if (priorViolates) continue;
       }
 
       buyIdx = i;

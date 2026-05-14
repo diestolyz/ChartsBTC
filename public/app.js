@@ -666,19 +666,10 @@ const calcPairBuyMaxAbsCl = document.getElementById("calc-pair-buy-max-abs-cl-us
 const calcPairHighBuyNoAboveBefore = document.getElementById(
   "calc-pair-high-buy-no-above-before",
 );
-const calcPairBuyPriorAbsClLeBuyAbs = document.getElementById(
-  "calc-pair-buy-prior-abs-cl-le-buy-abs",
-);
-const calcPairBuyPriorAbsClMult = document.getElementById("calc-pair-buy-prior-abs-cl-mult");
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
 const calcPairFixedLossUsd = document.getElementById("calc-pair-fixed-loss-usd");
 const calcFeeUsd = document.getElementById("calc-fee-usd");
-
-function syncPriorAbsClMultUi() {
-  if (!calcPairBuyPriorAbsClMult) return;
-  calcPairBuyPriorAbsClMult.disabled = !calcPairBuyPriorAbsClLeBuyAbs?.checked;
-}
 
 function setCalcBatchSummary(text) {
   if (!calcBatchSummary) return;
@@ -1046,17 +1037,10 @@ function readLegPairOptsFromForm() {
   if (feeForm != null && feeForm > 0) {
     feeUsd = Math.max(0, Math.min(9_999_999, feeForm));
   }
-  const multRaw = num(calcPairBuyPriorAbsClMult?.value);
-  let pairBuyPriorAbsClMultiplier = 1;
-  if (multRaw != null && multRaw > 0) {
-    pairBuyPriorAbsClMultiplier = Math.min(1000, Math.max(1, multRaw));
-  }
   return {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross: calcPairHighBuyNoAboveBefore?.checked !== false,
-    pairBuyPriorAbsClLeBuyAbs: Boolean(calcPairBuyPriorAbsClLeBuyAbs?.checked),
-    pairBuyPriorAbsClMultiplier,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1116,8 +1100,6 @@ function collectCalcParamsForSave() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
-    pairBuyPriorAbsClLeBuyAbs,
-    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1132,8 +1114,6 @@ function collectCalcParamsForSave() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
-    pairBuyPriorAbsClLeBuyAbs,
-    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1173,20 +1153,6 @@ function applyCalcPresetParams(params) {
       v === false || v === 0 || v === "0" || v === "false" || v === "off" || v === "no";
     calcPairHighBuyNoAboveBefore.checked = !off;
   }
-  if (calcPairBuyPriorAbsClLeBuyAbs) {
-    calcPairBuyPriorAbsClLeBuyAbs.checked =
-      p.pairBuyPriorAbsClLeBuyAbs === true ||
-      p.pairBuyPriorAbsClLeBuyAbs === 1 ||
-      p.pairBuyPriorAbsClLeBuyAbs === "1" ||
-      p.pairBuyPriorAbsClLeBuyAbs === "true";
-  }
-  if (calcPairBuyPriorAbsClMult) {
-    const m = num(p.pairBuyPriorAbsClMultiplier);
-    const v =
-      m != null && m > 0 ? Math.min(1000, Math.max(1, m)) : 1;
-    calcPairBuyPriorAbsClMult.value = String(v);
-  }
-  syncPriorAbsClMultUi();
   if (calcAdvancedPairSell) {
     calcAdvancedPairSell.checked =
       p.advancedPairSell === true ||
@@ -1253,20 +1219,8 @@ function rebuildCalcPresetOptions(filterRaw) {
       pp.advancedPairSell === "true"
         ? "adv卖"
         : "";
-    const priorOn =
-      pp.pairBuyPriorAbsClLeBuyAbs === true ||
-      pp.pairBuyPriorAbsClLeBuyAbs === 1 ||
-      pp.pairBuyPriorAbsClLeBuyAbs === "1" ||
-      pp.pairBuyPriorAbsClLeBuyAbs === "true";
-    let priorClLeBuy = "";
-    if (priorOn) {
-      const pm = num(pp.pairBuyPriorAbsClMultiplier);
-      const n = pm != null && pm > 0 ? Math.min(1000, Math.max(1, pm)) : 1;
-      priorClLeBuy = `买点|CL|≥先×${n}`;
-    }
     const bits = [`${pr.name} — 买 ${pb} · [${t0s},${t1s}]s`];
     if (clBuyS) bits.push(clBuyS);
-    if (priorClLeBuy) bits.push(priorClLeBuy);
     if (adv) bits.push(adv);
     o.title = bits.join(" · ");
     calcPresetSelect.appendChild(o);
@@ -1406,10 +1360,6 @@ if (calcPresetSave) {
     void saveCalcPreset();
   });
 }
-if (calcPairBuyPriorAbsClLeBuyAbs) {
-  calcPairBuyPriorAbsClLeBuyAbs.addEventListener("change", syncPriorAbsClMultUi);
-}
-syncPriorAbsClMultUi();
 
 if (calcPresetDelete) {
   calcPresetDelete.addEventListener("click", () => {
@@ -1435,8 +1385,8 @@ function applySingleCalcResult(r, params) {
   if (r.code === "no_buy") {
     const hi = P_buyLimit > 0.5 + 1e-12;
     const detail = hi
-      ? `[${t0}–${t1}]s 内无买点：两侧 mid 自下向上穿入 ${P_buyLimit.toFixed(4)}（含等号）者优先为待买侧；或该侧买点前曾高于限价已否决；或链上/买点前 |BTC 差价| 相对买点约束等过滤未过`
-      : `[${t0}–${t1}]s 内无 Up/Down mid ≤ ${P_buyLimit.toFixed(4)}；或未过链上/买点前 |BTC 差价| 相对买点等过滤`;
+      ? `[${t0}–${t1}]s 内无买点：两侧 mid 自下向上穿入 ${P_buyLimit.toFixed(4)}（含等号）者优先为待买侧；或该侧买点前曾高于限价已否决；或未过链上 |BTC 差价| 允许买入区间等过滤`
+      : `[${t0}–${t1}]s 内无 Up/Down mid ≤ ${P_buyLimit.toFixed(4)}；或未过链上 |BTC 差价| 允许买入区间等过滤`;
     setCalcOutcome("neutral", "未成交 · 盈亏 0 USD", detail);
     return;
   }
@@ -1515,8 +1465,6 @@ async function runLegPairCalculator() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
-    pairBuyPriorAbsClLeBuyAbs,
-    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1526,8 +1474,6 @@ async function runLegPairCalculator() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
-    pairBuyPriorAbsClLeBuyAbs,
-    pairBuyPriorAbsClMultiplier,
     advancedPairSell,
     pairStopPriceUsd,
     pairFixedLossUsd,
@@ -1582,8 +1528,6 @@ async function runLegPairCalculator() {
         pairBuyMinAbsChainlinkUsd,
         pairBuyMaxAbsChainlinkUsd,
         pairHighBuyNoAboveBeforeCross,
-        pairBuyPriorAbsClLeBuyAbs,
-        pairBuyPriorAbsClMultiplier,
         advancedPairSell,
         pairStopPriceUsd,
         pairFixedLossUsd,
