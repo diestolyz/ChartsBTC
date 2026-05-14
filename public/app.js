@@ -35,6 +35,8 @@ let marketTimelineReady = false;
 let marketTimelineLoadPromise = null;
 /** 当前窗口开盘参考（Gamma / RTDS；仅「跟随实时」时使用） */
 let chainlinkOpenUsd = null;
+/** 最近 WSS 快照中的官方 `btcOpenUsd`（归档）；测算与页头「Chainlink 差价」同源 */
+let chartSnapshotBtcOpenUsd = null;
 /** @type {{ btcDeltaUsd?: number | null } | null} */
 let lastHealthJson = null;
 
@@ -346,6 +348,7 @@ function connectChartWs() {
     if (msg.type === "snapshot") {
       tickBuffer = Array.isArray(msg.ticks) ? msg.ticks.slice() : [];
       const fromArchive = chartSlugOverride != null && chartSlugOverride !== "";
+      chartSnapshotBtcOpenUsd = fromArchive ? num(msg.btcOpenUsd) : null;
       const archiveOpenOverride = fromArchive ? num(msg.btcOpenUsd) : null;
       let slugForTicks =
         chartSlugOverride != null && chartSlugOverride !== ""
@@ -693,7 +696,7 @@ function setCalcBatchSummary(text) {
 let calcBatchChart = null;
 
 /**
- * 最近一次成功的「计算全量」响应中可用于导出的明细（含 closed/float 的 ticks）。
+ * 最近一次成功的「计算全量」响应中的明细（汇总；逐秒盘口不再随 JSON 返回以免断连）。
  * @type {{ details: unknown[] } | null}
  */
 let lastCalcBatchForExport = null;
@@ -753,7 +756,7 @@ function exportCalcBatchToXlsx(payload) {
 
   const wb = XLSX.utils.book_new();
   const metaRows = [
-    ["导出说明", "单侧测算「计算全量」原始盘口（仅 平仓 / 未平仓；不含 未买 等）"],
+    ["导出说明", "单侧测算「计算全量」结果；逐秒盘口已不随接口返回（避免超大 JSON 导致连接中断）。下表为每盘一行汇总；逐秒档需另行按 slug 拉取。"],
     ["导出时间（本地，精确到秒）", formatLocalDateTimeToSecond(Date.now())],
   ];
   if (!blocks.length) {
@@ -786,6 +789,25 @@ function exportCalcBatchToXlsx(payload) {
     const nu = Number(o.netUsd);
     const netUsdCell = Number.isFinite(nu) ? nu : "";
     const ticks = Array.isArray(o.ticks) ? o.ticks : [];
+    if (!ticks.length) {
+      aoa.push([
+        slug,
+        timeRange,
+        tag,
+        netUsdCell,
+        "—",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+      ]);
+      continue;
+    }
     for (const t of ticks) {
       if (!t || typeof t !== "object") continue;
       const tr = /** @type {Record<string, unknown>} */ (t);
@@ -1436,6 +1458,11 @@ function applySingleCalcResult(r, params) {
   }
   if (r.code === "float" && r.P_entry != null && r.t_entry != null && r.legLabel) {
     const nu = Number(r.netUsd);
+    const src = /** @type {{ floatSettleSource?: string; chainlinkDeltaUsd?: number }} */ (r);
+    const clMode =
+      src.floatSettleSource === "chainlink" &&
+      src.chainlinkDeltaUsd != null &&
+      Number.isFinite(Number(src.chainlinkDeltaUsd));
     const hasMtm =
       r.P_exit != null &&
       r.t_exit != null &&
@@ -1463,9 +1490,11 @@ function applySingleCalcResult(r, params) {
       profit >= 0
         ? `浮盈 ${fmtUsd(profit)} USD`
         : `浮亏 ${fmtUsd(Math.abs(profit))} USD`;
-    const detail = hasMtm
-      ? `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 期末 mid ${r.P_exit.toFixed(4)} @${r.t_exit.toFixed(1)}s（相对入账价）· ${N} 份 · 未达卖出限价 ${P_sellTarget.toFixed(4)}${entryNote}`
-      : `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 未达卖出 (需 ${r.legLabel} ≥ ${P_sellTarget.toFixed(4)}) · ${N} 份${pctNote}${entryNote}`;
+    const detail = clMode
+      ? `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 未平仓 · 收盘差价 ${formatUsdDelta(Number(src.chainlinkDeltaUsd))}（缓冲末条现货 − 页头「开盘 BTC」同源）→ 结算价 ${Number(r.P_exit).toFixed(4)} @${Number(r.t_exit).toFixed(1)}s · ${N} 份${entryNote}`
+      : hasMtm
+        ? `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 期末 mid ${r.P_exit.toFixed(4)} @${r.t_exit.toFixed(1)}s（相对入账价）· ${N} 份 · 未达卖出限价 ${P_sellTarget.toFixed(4)}${entryNote}`
+        : `${r.legLabel} 买入 ${r.P_entry.toFixed(4)} @${r.t_entry.toFixed(1)}s · 未达卖出 (需 ${r.legLabel} ≥ ${P_sellTarget.toFixed(4)}) · ${N} 份${pctNote}${entryNote}`;
     setCalcOutcome(kind, headline, detail);
   }
 }
@@ -1504,6 +1533,11 @@ async function runLegPairCalculator() {
     pairFixedLossUsd,
     feeUsd,
   };
+  if (chartSnapshotBtcOpenUsd != null && Number.isFinite(chartSnapshotBtcOpenUsd)) {
+    calcOpts.chainlinkOpenUsd = chartSnapshotBtcOpenUsd;
+  } else if (chainlinkOpenUsd != null && Number.isFinite(chainlinkOpenUsd)) {
+    calcOpts.chainlinkOpenUsd = chainlinkOpenUsd;
+  }
 
   if (!calcFullBatch?.checked) {
     destroyCalcBatchChart();

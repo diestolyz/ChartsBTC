@@ -1141,21 +1141,31 @@ async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
   if (!pool || !slugs.length) return [];
   const lim = Math.min(50_000, Math.max(1, Math.floor(perSlugLimit)));
   const headTailN = Math.ceil(lim / 2);
-  const placeholders = slugs.map(() => "?").join(",");
-  const [rows] = await pool.query(
-    `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
-     FROM (
-       SELECT t.ts_ms, t.market_slug, t.up_bid, t.up_ask, t.up_mid, t.down_bid, t.down_ask, t.down_mid, t.btc_usd,
-         ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn_a,
-         ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms DESC) AS rn_d
-       FROM pm_book_ticks t
-       WHERE t.market_slug IN (${placeholders})
-     ) z
-     WHERE z.rn_a <= ? OR z.rn_d <= ?
-     ORDER BY z.market_slug ASC, z.ts_ms ASC`,
-    [...slugs, headTailN, headTailN],
-  );
-  return rows;
+  /** 单次 IN 过长易导致 MySQL / 驱动断连；分块查询后合并 */
+  const SLUG_CHUNK = 120;
+  /** @type {unknown[]} */
+  const all = [];
+  for (let off = 0; off < slugs.length; off += SLUG_CHUNK) {
+    const chunk = slugs.slice(off, off + SLUG_CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    const [rows] = await pool.query(
+      `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
+       FROM (
+         SELECT t.ts_ms, t.market_slug, t.up_bid, t.up_ask, t.up_mid, t.down_bid, t.down_ask, t.down_mid, t.btc_usd,
+           ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn_a,
+           ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms DESC) AS rn_d
+         FROM pm_book_ticks t
+         WHERE t.market_slug IN (${placeholders})
+       ) z
+       WHERE z.rn_a <= ? OR z.rn_d <= ?
+       ORDER BY z.market_slug ASC, z.ts_ms ASC`,
+      [...chunk, headTailN, headTailN],
+    );
+    if (Array.isArray(rows)) {
+      for (const r of rows) all.push(r);
+    }
+  }
+  return all;
 }
 
 /**
@@ -1188,41 +1198,6 @@ function jsonSafeFiniteNum(v) {
   }
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
-}
-
-/**
- * 全量测算导出用：单行 tick 纯 JSON 对象（无 BigInt）。
- * @param {unknown} row
- */
-function serializeTickRowForCalcBatchExport(row) {
-  if (!row || typeof row !== "object") return null;
-  const r = /** @type {Record<string, unknown>} */ (row);
-  const ts_ms = jsonSafeFiniteNum(r.ts_ms);
-  if (ts_ms == null) return null;
-  return {
-    ts_ms,
-    up_bid: jsonSafeFiniteNum(r.up_bid),
-    up_ask: jsonSafeFiniteNum(r.up_ask),
-    up_mid: jsonSafeFiniteNum(r.up_mid),
-    down_bid: jsonSafeFiniteNum(r.down_bid),
-    down_ask: jsonSafeFiniteNum(r.down_ask),
-    down_mid: jsonSafeFiniteNum(r.down_mid),
-    btc_usd: jsonSafeFiniteNum(r.btc_usd),
-  };
-}
-
-/**
- * @param {unknown[]} rows
- * @returns {Record<string, number | null>[]}
- */
-function serializeTicksForCalcBatchExport(rows) {
-  const out = [];
-  if (!Array.isArray(rows)) return out;
-  for (const row of rows) {
-    const o = serializeTickRowForCalcBatchExport(row);
-    if (o) out.push(o);
-  }
-  return out;
 }
 
 /**
@@ -1293,12 +1268,12 @@ api.post("/calc-batch", async (req, res) => {
       if (slug) slugs.push(slug);
     }
 
-    /** @type {Map<string, number | null>} */
+    /** @type {Map<string, { avg: number | null; btcOpen: number | null }>} */
     const spreadBySlug = new Map();
     if (slugs.length) {
       const placeholders = slugs.map(() => "?").join(",");
       const [sRows] = await pool.query(
-        `SELECT market_slug, avg_abs_spread_usd
+        `SELECT market_slug, avg_abs_spread_usd, btc_open_usd
          FROM btc_abs_spread_5m
          WHERE market_slug IN (${placeholders})`,
         slugs,
@@ -1307,7 +1282,10 @@ api.post("/calc-batch", async (req, res) => {
         if (!row || typeof row !== "object") continue;
         const s = /** @type {{ market_slug?: unknown }} */ (row).market_slug;
         if (typeof s !== "string" || !s) continue;
-        spreadBySlug.set(s, jsonSafeFiniteNum(/** @type {{ avg_abs_spread_usd?: unknown }} */ (row).avg_abs_spread_usd));
+        spreadBySlug.set(s, {
+          avg: jsonSafeFiniteNum(/** @type {{ avg_abs_spread_usd?: unknown }} */ (row).avg_abs_spread_usd),
+          btcOpen: jsonSafeFiniteNum(/** @type {{ btc_open_usd?: unknown }} */ (row).btc_open_usd),
+        });
       }
     }
 
@@ -1332,6 +1310,8 @@ api.post("/calc-batch", async (req, res) => {
       try {
         const ticks = bySlug.get(slug) ?? [];
         const calcOpts = normalizeLegPairOpts(b);
+        const sp = spreadBySlug.get(slug);
+        if (sp?.btcOpen != null) calcOpts.chainlinkOpenUsd = sp.btcOpen;
         const r = computeLegPnlFromRows(ticks, slug, P_buyLimit, t0, t1, P_sellTarget, N, calcOpts);
         total += r.netUsd;
         if (r.code === "no_buy" || r.code === "no_points" || r.code === "no_data") {
@@ -1354,10 +1334,10 @@ api.post("/calc-batch", async (req, res) => {
           tag,
           netUsd: r.netUsd,
           code: r.code,
-          avgAbsSpreadUsd: spreadBySlug.has(slug) ? spreadBySlug.get(slug) : null,
+          avgAbsSpreadUsd: spreadBySlug.get(slug)?.avg ?? null,
         };
         if (r.code === "closed" || r.code === "float") {
-          one.ticks = serializeTicksForCalcBatchExport(ticks);
+          one.tickCount = ticks.length;
         }
         details.push(one);
       } catch (e) {
@@ -1369,7 +1349,7 @@ api.post("/calc-batch", async (req, res) => {
           tag: "错误",
           netUsd: 0,
           code: "error",
-          avgAbsSpreadUsd: spreadBySlug.has(slug) ? spreadBySlug.get(slug) : null,
+          avgAbsSpreadUsd: spreadBySlug.get(slug)?.avg ?? null,
           error: e instanceof Error ? e.message : String(e),
         });
       }

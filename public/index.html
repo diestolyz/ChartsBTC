@@ -48,8 +48,8 @@
       <section class="status-bar" aria-live="polite">
         <span title="库字段 up_mid：该秒末 mid 与 0.5 分档后取卖一极小或卖一极大，非算术 mid">Up 卖一 <strong id="live-up" class="mono">—</strong></span>
         <span title="库字段 down_mid：同上">Down 卖一 <strong id="live-down" class="mono">—</strong></span>
-        <span>开盘 BTC <strong id="live-btc-open" class="mono" title="本盘 Chainlink 开盘参考价；归档视图为该段首条现货价">—</strong></span>
-        <span>Chainlink 差价 <strong id="live-btc" class="mono" title="现价 − 开盘参考价">—</strong></span>
+        <span>开盘 BTC <strong id="live-btc-open" class="mono" title="测算用开盘价：本盘 Chainlink 参考；归档为快照官方价，无则该段首条现货">—</strong></span>
+        <span>Chainlink 差价 <strong id="live-btc" class="mono" title="展示：末条现货 − 开盘（实时盘可能叠加 health 更贴市价）。未平仓测算：缓冲内自尾向前的末条有效 btc_usd − 上格同源开盘（与状态栏归档一致）">—</strong></span>
         <span class="muted" id="conn-label">—</span>
       </section>
 

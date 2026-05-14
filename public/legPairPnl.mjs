@@ -67,6 +67,55 @@ function terminalFloatLegPxFromRows(rowsAsc, slug, leg) {
   return tailPick;
 }
 
+/** 卖价为 1 或 0.01 时：不做限价止盈扫描，固定走未平仓并按 Chainlink 差价结算（与页头一致）。 */
+export function isSellPriceChainlinkFloatMode(P_sellTarget) {
+  if (!Number.isFinite(P_sellTarget)) return false;
+  const eps = 1e-8;
+  return Math.abs(P_sellTarget - 1) <= eps || Math.abs(P_sellTarget - 0.01) <= eps;
+}
+
+/**
+ * 与页头「Chainlink 差价」同源：**升序 `rows` 自尾向前**，首条带有效 `btc_usd` 的采样（缓冲物理最后一帧）。
+ * @param {unknown[]} rowsAsc
+ * @returns {{ v: number; ts_ms: number } | null}
+ */
+function lastBtcUsdFromBufferTail(rowsAsc) {
+  for (let i = rowsAsc.length - 1; i >= 0; i--) {
+    const r = rowsAsc[i];
+    const ts = num(r.ts_ms);
+    const v = num(r.btc_usd);
+    if (ts != null && v != null) return { v, ts_ms: ts };
+  }
+  return null;
+}
+
+/**
+ * 未平仓 Chainlink 结算：收盘差价 = **缓冲末条有效现货** `btc_usd` − **页头同源开盘**（`opts.chainlinkOpenUsd` 或首条 tick 现货）。
+ * 正 Up 胜、负 Down 胜。
+ * @param {"up" | "down"} leg
+ * @param {unknown[]} rowsAsc
+ * @param {string | null} slug
+ * @param {number | null} openBtcFirstTick
+ * @param {LegPairPnlOpts} opts
+ * @returns {{ settlePx: number; delta: number; t_exit: number } | null}
+ */
+function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
+  const openCl = num(opts.chainlinkOpenUsd) ?? openBtcFirstTick;
+  if (openCl == null) return null;
+  const lastCl = lastBtcUsdFromBufferTail(rowsAsc);
+  if (lastCl == null) return null;
+  const delta = lastCl.v - openCl;
+  const tsMs = lastCl.ts_ms;
+  const epsD = 1e-9;
+  let settlePx;
+  if (delta > epsD) settlePx = leg === "up" ? 1 : 0;
+  else if (delta < -epsD) settlePx = leg === "down" ? 1 : 0;
+  else settlePx = 0.5;
+  const t_exit =
+    tsMs != null ? secondsFromWindowOpen(tsMs, slug, rowsAsc) : WINDOW_SEC;
+  return { settlePx, delta, t_exit };
+}
+
 /**
  * 与 BTC5Mins `pair-limit-params` 对齐的可选约束（未传或默认时与旧版行为一致：仅 mid 触发 + 限价卖出）。
  * @typedef {object} LegPairPnlOpts
@@ -79,6 +128,7 @@ function terminalFloatLegPxFromRows(rowsAsc, slug, leg) {
  * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
  * @property {boolean} [pairBuyPriorAbsClLeBuyAbs] — 为真时：候选买点须具备有效 |现货−开盘|；且对盘首至买点前每一具备有效差价的 tick，须满足 买点 |差价| ≥ `pairBuyPriorAbsClMultiplier` × 先前 |差价|（默认倍数 1，即先前任一不得大于买点）；否则否决该候选并继续向后扫描。默认假。
  * @property {number} [pairBuyPriorAbsClMultiplier] — 与上一项同时使用时生效；≥1，默认 1；校验容忍约 1e−6 USD。
+ * @property {number} [chainlinkOpenUsd] — 与页头「开盘 BTC」（`#live-btc-open`）一致时传入（如归档快照 `btcOpenUsd`、实时 health 的开盘）。不传则用首条 tick 的 `btc_usd` 作开盘近似（与归档无官方开盘时页头一致）。
  */
 
 /**
@@ -326,6 +376,8 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   /** 各自首次触发的 tick 索引（整窗扫描，用于「先止盈后仍破止损」等回看） */
   let firstStopJ = -1;
   let firstLimitJ = -1;
+  /** 卖价 1 / 0.01：不按限价在窗内止盈，固定未平仓并按 Chainlink 差价结算 */
+  const suppressLimitExit = isSellPriceChainlinkFloatMode(P_sellTarget);
 
   for (let j = exitStartJ; j < points.length; j++) {
     const q = points[j];
@@ -340,7 +392,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     if (stopOn && stopLinePx != null && px != null && px <= stopLinePx + eps) {
       if (firstStopJ < 0) firstStopJ = j;
     }
-    if (px != null && px >= P_sellTarget) {
+    if (!suppressLimitExit && px != null && px >= P_sellTarget) {
       if (firstLimitJ < 0) firstLimitJ = j;
     }
   }
@@ -408,13 +460,37 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     };
   }
   /**
-   * 「未平仓」：买/止盈/止损仍仅用 `points`（sec ≤ `WINDOW_EFFECTIVE_MAX_SEC`）。
-   * 结算价 **只** 来自 `rows` 中 `sec ∈ (WINDOW_EFFECTIVE_MAX_SEC, WINDOW_SEC]` 的 **一条**（sec 最大、即最接近 300s）；**不用**该开区间内的其它逻辑聚合，也 **不** 用 `[0, WINDOW_EFFECTIVE_MAX_SEC]` 的价做未平仓二元判定。
-   * - 该价 > 0.5：结算到 1 → netUsd = N×(1−P_entry)
-   * - 该价 < 0.5：结算到 0 → netUsd = −N×P_entry
-   * - == 0.5：盯市 N×(0.5−P_entry)
-   * 若尾段无有效价：`terminal` 为 `null`，走下方全亏回退。
+   * 「未平仓」：优先按 **缓冲末条有效现货 − 页头同源开盘** 算 Chainlink 差价；正 Up 胜、负 Down 胜。
+   * 无有效 btc 时回退：裁切后盘末一条已买腿 mid（`terminalFloatLegPxFromRows`）；再无则全亏回退。
    */
+  const clTerm = chainlinkFloatSettlement(leg, rows, slug, openBtc, opts);
+  if (clTerm != null) {
+    const { settlePx, delta, t_exit } = clTerm;
+    const win = settlePx >= 1 - eps;
+    const lose = settlePx <= eps;
+    let netUsdFloat =
+      fixedLossUsd > 0
+        ? win
+          ? N * (1 - P_entry)
+          : lose
+            ? -fixedLossUsd
+            : N * (0.5 - P_entry)
+        : N * (settlePx - P_entry);
+    if (feeUsd > 0) netUsdFloat -= feeUsd;
+    return {
+      code: "float",
+      netUsd: netUsdFloat,
+      leg,
+      legLabel,
+      P_entry,
+      P_exit: settlePx,
+      t_entry,
+      t_exit,
+      floatSettleSource: "chainlink",
+      chainlinkDeltaUsd: delta,
+      ...(fixedLossUsd > 0 && lose ? { floatLoss: fixedLossUsd + feeUsd } : {}),
+    };
+  }
   const terminal = terminalFloatLegPxFromRows(rows, slug, leg);
   if (terminal != null) {
     const pxEnd = terminal.px;
@@ -438,6 +514,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       P_exit: pxEnd,
       t_entry,
       t_exit: tEnd,
+      floatSettleSource: "mid",
       ...(fixedLossUsd > 0 && pxEnd < 0.5 - eps ? { floatLoss: fixedLossUsd + feeUsd } : {}),
     };
   }
@@ -458,6 +535,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     P_entry,
     t_entry,
     floatLoss,
+    floatSettleSource: "fallback",
   };
 }
 
