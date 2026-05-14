@@ -37,6 +37,9 @@ const CALC_PRESETS_PATH = path.join(__dirname, "data", "calc-presets.json");
 const UI_SETTINGS_PATH = path.join(__dirname, "data", "ui-settings.json");
 const CALC_PRESETS_MAX = 200;
 const CALC_PRESET_NAME_MAX = 80;
+/** 全量计算 tick 查询：每轮并行 slug 分片数（勿过大；pool 常见 connectionLimit≈10） */
+const CALC_BATCH_TICK_QUERY_PARALLEL = 3;
+const CALC_BATCH_TICK_QUERY_PARALLEL_MAX = 6;
 
 /** 读取项目根目录 `.env`（不覆盖已在 shell 里设置的变量） */
 function loadDotEnvFromFile() {
@@ -1143,13 +1146,25 @@ async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
   const headTailN = Math.ceil(lim / 2);
   /** 单次 IN 过长易导致 MySQL / 驱动断连；分块查询后合并 */
   const SLUG_CHUNK = 120;
-  /** @type {unknown[]} */
-  const all = [];
+  const parallel = Math.min(
+    CALC_BATCH_TICK_QUERY_PARALLEL_MAX,
+    Math.max(1, Math.floor(CALC_BATCH_TICK_QUERY_PARALLEL)),
+  );
+  /** @type {string[][]} */
+  const chunks = [];
   for (let off = 0; off < slugs.length; off += SLUG_CHUNK) {
-    const chunk = slugs.slice(off, off + SLUG_CHUNK);
+    chunks.push(slugs.slice(off, off + SLUG_CHUNK));
+  }
+
+  /**
+   * @param {string[]} chunk
+   * @returns {Promise<unknown[]>}
+   */
+  function queryOneChunk(chunk) {
     const placeholders = chunk.map(() => "?").join(",");
-    const [rows] = await pool.query(
-      `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
+    return pool
+      .query(
+        `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
        FROM (
          SELECT t.ts_ms, t.market_slug, t.up_bid, t.up_ask, t.up_mid, t.down_bid, t.down_ask, t.down_mid, t.btc_usd,
            ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn_a,
@@ -1159,9 +1174,17 @@ async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
        ) z
        WHERE z.rn_a <= ? OR z.rn_d <= ?
        ORDER BY z.market_slug ASC, z.ts_ms ASC`,
-      [...chunk, headTailN, headTailN],
-    );
-    if (Array.isArray(rows)) {
+        [...chunk, headTailN, headTailN],
+      )
+      .then(([rows]) => (Array.isArray(rows) ? rows : []));
+  }
+
+  /** @type {unknown[]} */
+  const all = [];
+  for (let i = 0; i < chunks.length; i += parallel) {
+    const batch = chunks.slice(i, i + parallel);
+    const parts = await Promise.all(batch.map((c) => queryOneChunk(c)));
+    for (const rows of parts) {
       for (const r of rows) all.push(r);
     }
   }
@@ -1202,6 +1225,7 @@ function jsonSafeFiniteNum(v) {
 
 /**
  * 单侧盈亏「全量」：一次拉齐 windows + 各盘 ticks，服务端套用与前端相同的 `computeLegPnlFromRows`。
+ * 窗口列表优先 `btc_abs_spread_5m`（与 `/market-windows/timeline` 同思路）；无行时回退 `pm_book_ticks` GROUP BY，`LIMIT min(windowsLimit,120)`。
  */
 api.post("/calc-batch", async (req, res) => {
   if (!pool) {
@@ -1237,17 +1261,30 @@ api.post("/calc-batch", async (req, res) => {
   t1 = Math.min(300, t1);
 
   try {
-    const [winRows] = await pool.query(
+    const [liteWin] = await pool.query(
       `SELECT market_slug AS slug,
-              MIN(ts_ms) AS min_ts_ms,
-              MAX(ts_ms) AS max_ts_ms,
-              COUNT(*) AS tick_count
-       FROM pm_book_ticks
-       GROUP BY market_slug
-       ORDER BY max_ts_ms DESC
+              window_start_ms AS min_ts_ms,
+              window_end_ms AS max_ts_ms,
+              sample_count AS tick_count
+       FROM btc_abs_spread_5m
+       ORDER BY window_start_ms DESC
        LIMIT ${windowsLimit}`,
     );
-    const windows = Array.isArray(winRows) ? winRows : [];
+    let windows = Array.isArray(liteWin) ? liteWin : [];
+    if (!windows.length) {
+      const coldLimit = Math.min(windowsLimit, 120);
+      const [fullWin] = await pool.query(
+        `SELECT market_slug AS slug,
+                MIN(ts_ms) AS min_ts_ms,
+                MAX(ts_ms) AS max_ts_ms,
+                COUNT(*) AS tick_count
+         FROM pm_book_ticks
+         GROUP BY market_slug
+         ORDER BY max_ts_ms DESC
+         LIMIT ${coldLimit}`,
+      );
+      windows = Array.isArray(fullWin) ? fullWin : [];
+    }
     if (!windows.length) {
       res.json({
         ok: true,
