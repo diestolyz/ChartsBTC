@@ -134,7 +134,7 @@ function chartTooltipTitleFromX(items) {
 /** 成交量绘制/刻度区：chartArea 下方占比（与价格区错开） */
 const CHART_VOL_ZONE_RATIO = 0.25;
 const CHART_ZONE_GAP_PX = 8;
-/** 成交量 yVol 轴 max = 数据峰值 × 该倍数，使折线落在刻度区下方约 1/倍数 高度 */
+/** 成交量 yVol 轴 max = 数据峰值 × 该倍数，使面积落在刻度区下方约 1/倍数 高度 */
 const CHART_VOL_Y_MAX_MULTIPLIER = 5;
 
 /**
@@ -251,44 +251,52 @@ const chart = new Chart(chartCanvas, {
       },
       {
         label: "Up BUY 成交 (USD)",
-        borderColor: "rgba(74, 222, 128, 0.85)",
+        borderColor: "rgba(74, 222, 128, 0.9)",
+        backgroundColor: "rgba(74, 222, 128, 0.32)",
         yAxisID: "yVol",
         order: 2,
+        fill: true,
         parsing: false,
         pointRadius: 0,
-        borderWidth: 1.25,
+        borderWidth: 1,
         tension: 0.08,
       },
       {
         label: "Up SELL 成交 (USD)",
-        borderColor: "rgba(74, 222, 128, 0.55)",
+        borderColor: "rgba(74, 222, 128, 0.65)",
+        backgroundColor: "rgba(74, 222, 128, 0.18)",
         borderDash: [5, 3],
         yAxisID: "yVol",
         order: 2,
+        fill: true,
         parsing: false,
         pointRadius: 0,
-        borderWidth: 1.25,
+        borderWidth: 1,
         tension: 0.08,
       },
       {
         label: "Down BUY 成交 (USD)",
-        borderColor: "rgba(248, 113, 113, 0.85)",
+        borderColor: "rgba(248, 113, 113, 0.9)",
+        backgroundColor: "rgba(248, 113, 113, 0.32)",
         yAxisID: "yVol",
         order: 2,
+        fill: true,
         parsing: false,
         pointRadius: 0,
-        borderWidth: 1.25,
+        borderWidth: 1,
         tension: 0.08,
       },
       {
         label: "Down SELL 成交 (USD)",
-        borderColor: "rgba(248, 113, 113, 0.55)",
+        borderColor: "rgba(248, 113, 113, 0.65)",
+        backgroundColor: "rgba(248, 113, 113, 0.18)",
         borderDash: [5, 3],
         yAxisID: "yVol",
         order: 2,
+        fill: true,
         parsing: false,
         pointRadius: 0,
-        borderWidth: 1.25,
+        borderWidth: 1,
         tension: 0.08,
       },
     ],
