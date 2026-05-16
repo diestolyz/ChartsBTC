@@ -1,5 +1,5 @@
 /**
- * 通过 WSS /ws/chart 订阅图表数据（快照 + 实时增量 + health 推送），用 Chart.js 绘制 Up/Down 序列（左轴；服务端按秒末 mid 分档写入卖一极小/极大至 up_mid/down_mid）与 Chainlink 差价（右轴）。
+ * 通过 WSS /ws/chart 订阅图表数据（快照 + 实时增量 + health 推送），用 Chart.js 在 #chart 绘制：Up/Down 卖一、Chainlink 差价、Up/Down 各自 BUY/SELL 成交量（USD）；X 轴均为距开盘 0–300s。
  * 仅 `/api/market-windows/timeline`（懒加载）、`/api/ui-settings` 与刷新用 HTTP；图表主路径为 WSS。
  */
 
@@ -8,6 +8,7 @@ import {
   WINDOW_EFFECTIVE_MAX_SEC,
   num,
   secondsFromWindowOpen,
+  windowStartSecFromSlug,
   computeLegPnlFromRows,
 } from "./legPairPnl.mjs";
 
@@ -105,6 +106,112 @@ function formatWindowOption(w) {
   return `${d0} → ${t1}${tickPart}`;
 }
 
+/** 与价格图对齐：距开盘 0–300s */
+function chartXScaleOptions() {
+  return {
+    type: "linear",
+    min: 0,
+    max: WINDOW_SEC,
+    title: { display: true, text: "距离开盘 (秒)", color: "#9ca3af" },
+    grid: { color: "rgba(255,255,255,0.06)" },
+    ticks: {
+      color: "#8a8f98",
+      maxRotation: 0,
+      stepSize: 30,
+      callback(v) {
+        return `${v}`;
+      },
+    },
+  };
+}
+
+function chartTooltipTitleFromX(items) {
+  const x = items[0]?.parsed?.x;
+  if (x == null) return "";
+  return `距开盘 ${Number(x).toFixed(2)} s`;
+}
+
+/** 成交量绘制/刻度区：chartArea 下方占比（与价格区错开） */
+const CHART_VOL_ZONE_RATIO = 0.25;
+const CHART_ZONE_GAP_PX = 8;
+/** 成交量 yVol 轴 max = 数据峰值 × 该倍数，使折线落在刻度区下方约 1/倍数 高度 */
+const CHART_VOL_Y_MAX_MULTIPLIER = 5;
+
+/**
+ * @param {{ top: number; bottom: number; left: number; right: number }} ca
+ */
+function computeChartZones(ca) {
+  const h = ca.bottom - ca.top;
+  const volH = Math.max(48, h * CHART_VOL_ZONE_RATIO);
+  const priceBottom = ca.bottom - volH - CHART_ZONE_GAP_PX;
+  const volTop = ca.bottom - volH;
+  return {
+    priceTop: ca.top,
+    priceBottom,
+    volTop,
+    volBottom: ca.bottom,
+  };
+}
+
+/** Chart.js scale.afterFit：把刻度与映射限制在对应纵向区域 */
+function chartZoneAfterFit(isVolume) {
+  return (/** @type {import("chart.js").Scale} */ scale) => {
+    const chart = scale.chart;
+    const ca = chart?.chartArea;
+    if (!ca || ca.bottom <= ca.top) return;
+    const z = computeChartZones(ca);
+    const top = isVolume ? z.volTop : z.priceTop;
+    const bottom = isVolume ? z.volBottom : z.priceBottom;
+    if (bottom - top < 8) return;
+    scale.top = top;
+    scale.bottom = bottom;
+    scale.height = scale.bottom - scale.top;
+  };
+}
+
+/**
+ * 归档快照用 msg.slug；否则用下拉/行内 slug，保证 secondsFromWindowOpen 与成交量 X 轴一致。
+ * @param {string | null} marketSlug
+ * @param {unknown[]} rows
+ */
+function resolveMarketSlugForRows(marketSlug, rows) {
+  if (marketSlug && windowStartSecFromSlug(marketSlug)) return marketSlug;
+  for (const r of rows) {
+    const s = /** @type {{ market_slug?: unknown }} */ (r).market_slug;
+    if (typeof s === "string" && windowStartSecFromSlug(s)) return s;
+  }
+  return marketSlug;
+}
+
+/** @param {number} volPeak */
+function applyYVolScaleLimits(volPeak) {
+  const maxVal = volPeak > 0 ? volPeak * CHART_VOL_Y_MAX_MULTIPLIER : undefined;
+  const opt = chart.options.scales?.yVol;
+  if (opt) {
+    opt.min = 0;
+    opt.max = maxVal;
+  }
+  const sc = chart.scales?.yVol;
+  if (sc) {
+    sc.options.min = 0;
+    sc.options.max = maxVal;
+  }
+}
+
+/**
+ * 归档一次性灌入大量点后，afterFit 分区需在布局稳定后再绘成交量。
+ * @param {unknown[]} rows
+ * @param {string | null} marketSlug
+ */
+function scheduleArchiveChartRelayout(rows, marketSlug) {
+  requestAnimationFrame(() => {
+    chart.resize();
+    const slug = resolveMarketSlugForRows(marketSlug, rows);
+    applyYVolScaleLimits(volumeTradeUsdPeak(rows, slug));
+    chart.update();
+  });
+}
+
 const chart = new Chart(chartCanvas, {
   type: "line",
   data: {
@@ -114,6 +221,7 @@ const chart = new Chart(chartCanvas, {
         borderColor: "rgba(74, 222, 128, 0.95)",
         backgroundColor: "rgba(74, 222, 128, 0.08)",
         yAxisID: "y",
+        order: 1,
         parsing: false,
         pointRadius: 0,
         borderWidth: 1.5,
@@ -124,6 +232,7 @@ const chart = new Chart(chartCanvas, {
         borderColor: "rgba(248, 113, 113, 0.95)",
         backgroundColor: "rgba(248, 113, 113, 0.06)",
         yAxisID: "y",
+        order: 1,
         parsing: false,
         pointRadius: 0,
         borderWidth: 1.5,
@@ -134,10 +243,53 @@ const chart = new Chart(chartCanvas, {
         borderColor: "rgba(251, 191, 36, 0.5)",
         backgroundColor: "rgba(251, 191, 36, 0.04)",
         yAxisID: "y1",
+        order: 1,
         parsing: false,
         pointRadius: 0,
         borderWidth: 1.5,
         tension: 0.05,
+      },
+      {
+        label: "Up BUY 成交 (USD)",
+        borderColor: "rgba(74, 222, 128, 0.85)",
+        yAxisID: "yVol",
+        order: 2,
+        parsing: false,
+        pointRadius: 0,
+        borderWidth: 1.25,
+        tension: 0.08,
+      },
+      {
+        label: "Up SELL 成交 (USD)",
+        borderColor: "rgba(74, 222, 128, 0.55)",
+        borderDash: [5, 3],
+        yAxisID: "yVol",
+        order: 2,
+        parsing: false,
+        pointRadius: 0,
+        borderWidth: 1.25,
+        tension: 0.08,
+      },
+      {
+        label: "Down BUY 成交 (USD)",
+        borderColor: "rgba(248, 113, 113, 0.85)",
+        yAxisID: "yVol",
+        order: 2,
+        parsing: false,
+        pointRadius: 0,
+        borderWidth: 1.25,
+        tension: 0.08,
+      },
+      {
+        label: "Down SELL 成交 (USD)",
+        borderColor: "rgba(248, 113, 113, 0.55)",
+        borderDash: [5, 3],
+        yAxisID: "yVol",
+        order: 2,
+        parsing: false,
+        pointRadius: 0,
+        borderWidth: 1.25,
+        tension: 0.08,
       },
     ],
   },
@@ -147,47 +299,49 @@ const chart = new Chart(chartCanvas, {
     interaction: { mode: "index", intersect: false },
     plugins: {
       legend: {
-        labels: { color: "#c4c9d4" },
+        labels: { color: "#c4c9d4", boxWidth: 12, font: { size: 11 } },
       },
       tooltip: {
         callbacks: {
-          title(items) {
-            const x = items[0]?.parsed?.x;
-            if (x == null) return "";
-            return `距开盘 ${Number(x).toFixed(2)} s`;
+          title: chartTooltipTitleFromX,
+          label(ctx) {
+            const y = ctx.parsed?.y;
+            const label = ctx.dataset.label ?? "";
+            if (ctx.dataset.yAxisID === "yVol") {
+              if (y == null || !Number.isFinite(y)) return `${label}: —`;
+              return `${label}: $${y.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            }
+            if (y == null || !Number.isFinite(y)) return `${label}: —`;
+            return `${label}: ${y}`;
           },
         },
       },
     },
     scales: {
-      x: {
-        type: "linear",
-        min: 0,
-        max: WINDOW_SEC,
-        title: { display: true, text: "距离开盘 (秒)", color: "#9ca3af" },
-        grid: { color: "rgba(255,255,255,0.06)" },
-        ticks: {
-          color: "#8a8f98",
-          maxRotation: 0,
-          stepSize: 30,
-          callback(v) {
-            return `${v}`;
-          },
-        },
-      },
+      x: chartXScaleOptions(),
       y: {
         position: "left",
         min: 0,
         max: 1,
+        afterFit: chartZoneAfterFit(false),
         title: { display: true, text: "隐含价格 (分档卖一)", color: "#9ca3af" },
-        grid: { color: "rgba(255,255,255,0.06)" },
+        grid: { color: "rgba(255,255,255,0.06)", drawOnChartArea: true },
         ticks: { color: "#8a8f98" },
       },
       y1: {
         position: "right",
+        afterFit: chartZoneAfterFit(false),
         title: { display: true, text: "相对开盘 (USD)", color: "#9ca3af" },
         grid: { drawOnChartArea: false },
         ticks: { color: "#d6b676" },
+      },
+      yVol: {
+        position: "right",
+        beginAtZero: true,
+        afterFit: chartZoneAfterFit(true),
+        title: { display: true, text: "成交量 (USD)", color: "#93c5fd" },
+        grid: { color: "rgba(147, 197, 253, 0.1)", drawOnChartArea: true },
+        ticks: { color: "#93c5fd" },
       },
     },
   },
@@ -213,10 +367,65 @@ function formatUsdPrice(px) {
 
 /**
  * @param {unknown[]} rows
+ * @param {string | null} marketSlug
+ */
+function buildVolumeSeries(rows, marketSlug) {
+  /** @type {{ x: number; y: number }[]} */
+  const upBuy = [];
+  /** @type {{ x: number; y: number }[]} */
+  const upSell = [];
+  /** @type {{ x: number; y: number }[]} */
+  const downBuy = [];
+  /** @type {{ x: number; y: number }[]} */
+  const downSell = [];
+  for (const r of rows) {
+    const ts = num(r.ts_ms);
+    if (ts == null) continue;
+    const sec = secondsFromWindowOpen(ts, marketSlug, rows);
+    if (sec < 0 || sec > WINDOW_SEC) continue;
+    const x = sec;
+    const rec = /** @type {Record<string, unknown>} */ (r);
+    upBuy.push({ x, y: num(rec.up_trade_buy_usd) ?? 0 });
+    upSell.push({ x, y: num(rec.up_trade_sell_usd) ?? 0 });
+    downBuy.push({ x, y: num(rec.down_trade_buy_usd) ?? 0 });
+    downSell.push({ x, y: num(rec.down_trade_sell_usd) ?? 0 });
+  }
+  return { upBuy, upSell, downBuy, downSell };
+}
+
+/**
+ * 当前窗口内四腿成交美元峰值（用于 yVol 上限）。
+ * @param {unknown[]} rows
+ * @param {string | null} marketSlug
+ */
+function volumeTradeUsdPeak(rows, marketSlug) {
+  let peak = 0;
+  for (const r of rows) {
+    const ts = num(r.ts_ms);
+    if (ts == null) continue;
+    const sec = secondsFromWindowOpen(ts, marketSlug, rows);
+    if (sec < 0 || sec > WINDOW_SEC) continue;
+    const rec = /** @type {Record<string, unknown>} */ (r);
+    for (const k of [
+      "up_trade_buy_usd",
+      "up_trade_sell_usd",
+      "down_trade_buy_usd",
+      "down_trade_sell_usd",
+    ]) {
+      const v = num(rec[k]);
+      if (v != null && v > peak) peak = v;
+    }
+  }
+  return peak;
+}
+
+/**
+ * @param {unknown[]} rows
  * @param {boolean} fromArchive - 用该盘首条记录的 btc 作开盘近似（服务端按时间升序返回）
  * @param {string | null} marketSlug - 用于解析窗口起点（slug 尾缀 unix）
  */
 function applyRows(rows, fromArchive = false, marketSlug = null, archiveOpenOverride = null) {
+  const slugResolved = resolveMarketSlugForRows(marketSlug, rows);
   const tUp = [];
   const tDown = [];
   const tBtc = [];
@@ -237,7 +446,7 @@ function applyRows(rows, fromArchive = false, marketSlug = null, archiveOpenOver
   for (const r of rows) {
     const ts = num(r.ts_ms);
     if (ts == null) continue;
-    const sec = secondsFromWindowOpen(ts, marketSlug, rows);
+    const sec = secondsFromWindowOpen(ts, slugResolved, rows);
     if (sec < 0 || sec > WINDOW_SEC) continue;
     const x = sec;
     const u = num(r.up_mid);
@@ -261,7 +470,15 @@ function applyRows(rows, fromArchive = false, marketSlug = null, archiveOpenOver
     ds2.label = "BTC USD (Chainlink)";
     chart.options.scales.y1.title.text = "BTC / USD";
   }
+  const vol = buildVolumeSeries(rows, slugResolved);
+  chart.data.datasets[3].data = vol.upBuy;
+  chart.data.datasets[4].data = vol.upSell;
+  chart.data.datasets[5].data = vol.downBuy;
+  chart.data.datasets[6].data = vol.downSell;
+  const volPeak = volumeTradeUsdPeak(rows, slugResolved);
+  applyYVolScaleLimits(volPeak);
   chart.update("none");
+  if (fromArchive) scheduleArchiveChartRelayout(rows, slugResolved);
 
   const last = rows[rows.length - 1];
   if (last) {
@@ -347,17 +564,23 @@ function connectChartWs() {
     }
     if (msg.type === "snapshot") {
       tickBuffer = Array.isArray(msg.ticks) ? msg.ticks.slice() : [];
-      const fromArchive = chartSlugOverride != null && chartSlugOverride !== "";
+      const fromArchive =
+        msg.mode === "archive" ||
+        (chartSlugOverride != null && chartSlugOverride !== "");
       chartSnapshotBtcOpenUsd = fromArchive ? num(msg.btcOpenUsd) : null;
       const archiveOpenOverride = fromArchive ? num(msg.btcOpenUsd) : null;
       let slugForTicks =
-        chartSlugOverride != null && chartSlugOverride !== ""
-          ? chartSlugOverride
-          : activeSlug;
+        typeof msg.slug === "string" && msg.slug
+          ? msg.slug
+          : chartSlugOverride != null && chartSlugOverride !== ""
+            ? chartSlugOverride
+            : activeSlug;
       if (!fromArchive && typeof msg.slug === "string" && msg.slug) {
         slugForTicks = msg.slug;
         activeSlug = msg.slug;
         if (slugLabel) slugLabel.textContent = msg.slug;
+      } else if (fromArchive && typeof msg.slug === "string" && msg.slug && slugLabel) {
+        slugLabel.textContent = msg.slug;
       }
       applyRows(tickBuffer, fromArchive, slugForTicks, archiveOpenOverride);
       const mode = fromArchive ? "归档" : "实时";
@@ -505,6 +728,7 @@ async function loadMarketTimelineOnce() {
     if (hasPrev) {
       marketSelect.value = prev;
       chartSlugOverride = prev;
+      if (chartWs?.readyState === WebSocket.OPEN) sendChartSubscribe();
     } else {
       marketSelect.value = "";
       chartSlugOverride = null;
@@ -771,6 +995,14 @@ function exportCalcBatchToXlsx(payload) {
     "down_ask",
     "down_mid",
     "btc_usd",
+    "up_trade_buy_shares",
+    "up_trade_sell_shares",
+    "up_trade_buy_usd",
+    "up_trade_sell_usd",
+    "down_trade_buy_shares",
+    "down_trade_sell_shares",
+    "down_trade_buy_usd",
+    "down_trade_sell_usd",
   ];
   const aoa = [header];
   for (const d of blocks) {
@@ -788,6 +1020,12 @@ function exportCalcBatchToXlsx(payload) {
         tag,
         netUsdCell,
         "—",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         "",
         "",
         "",
@@ -821,6 +1059,14 @@ function exportCalcBatchToXlsx(payload) {
         exportSheetNum(tr.down_ask),
         exportSheetNum(tr.down_mid),
         exportSheetNum(tr.btc_usd),
+        exportSheetNum(tr.up_trade_buy_shares),
+        exportSheetNum(tr.up_trade_sell_shares),
+        exportSheetNum(tr.up_trade_buy_usd),
+        exportSheetNum(tr.up_trade_sell_usd),
+        exportSheetNum(tr.down_trade_buy_shares),
+        exportSheetNum(tr.down_trade_sell_shares),
+        exportSheetNum(tr.down_trade_buy_usd),
+        exportSheetNum(tr.down_trade_sell_usd),
       ]);
     }
   }

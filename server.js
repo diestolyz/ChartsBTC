@@ -139,7 +139,7 @@ async function syncServerTime() {
   }
 }
 
-const book = createBookState();
+const book = createBookState({ onTrade: (ev) => recordTradeSample(ev) });
 
 /**
  * 入库前 1 秒窗口内聚合 Polymarket 盘口采样（与 tickLoop 周期一致，默认 TICK_MS=1000）。
@@ -150,13 +150,54 @@ const book = createBookState();
  * 无有效分档 mid 时：优先最后一次卖一，否则同上的卖一 min、bestAsk、均价、盘口 mid。
  * `up_bid`/`up_ask`/`down_*` 取该秒内**最后一次**快照；`up_mid`/`down_mid` 为上述记入值。
  */
+function createEmptyTradeLegAccum() {
+  return { buyShares: 0, sellShares: 0, buyUsd: 0, sellUsd: 0 };
+}
+
 function createEmptySecondBuffer() {
   return {
     /** @type {{ bids: number[]; asks: number[]; lastBid: number | null; lastAsk: number | null; lastMid: number | null }} */
     up: { bids: [], asks: [], lastBid: null, lastAsk: null, lastMid: null },
     /** @type {{ bids: number[]; asks: number[]; lastBid: number | null; lastAsk: number | null; lastMid: number | null }} */
     down: { bids: [], asks: [], lastBid: null, lastAsk: null, lastMid: null },
+    trade: { up: createEmptyTradeLegAccum(), down: createEmptyTradeLegAccum() },
     sampleCount: 0,
+  };
+}
+
+/**
+ * @param {{ assetId: string; price: number; size: number; side: "BUY" | "SELL" | null }} ev
+ */
+function recordTradeSample(ev) {
+  if (!active) return;
+  const px = Number(ev.price);
+  const sz = Number(ev.size);
+  if (!Number.isFinite(px) || !Number.isFinite(sz) || sz <= 0) return;
+  const usd = px * sz;
+  const aid = String(ev.assetId);
+  const isUp = aid === String(active.upId);
+  const isDown = aid === String(active.downId);
+  if (!isUp && !isDown) return;
+  const leg = isUp ? secondBuffer.trade.up : secondBuffer.trade.down;
+  if (ev.side === "BUY") {
+    leg.buyShares += sz;
+    leg.buyUsd += usd;
+  } else if (ev.side === "SELL") {
+    leg.sellShares += sz;
+    leg.sellUsd += usd;
+  }
+}
+
+/**
+ * @param {{ buyShares: number; sellShares: number; buyUsd: number; sellUsd: number }} leg
+ */
+function tradeLegToDbFields(leg) {
+  const round = (v) => (v > 0 && Number.isFinite(v) ? v : 0);
+  return {
+    buyShares: round(leg.buyShares),
+    sellShares: round(leg.sellShares),
+    buyUsd: round(leg.buyUsd),
+    sellUsd: round(leg.sellUsd),
   };
 }
 
@@ -259,6 +300,8 @@ function buildAggregatedTickRow(ts_ms, market_slug, btc_usd) {
   const downF = odds?.down ?? { bestBid: null, bestAsk: null, mid: null };
   const up = finalizeSideForDb(secondBuffer.up, upF);
   const down = finalizeSideForDb(secondBuffer.down, downF);
+  const upTr = tradeLegToDbFields(secondBuffer.trade.up);
+  const dnTr = tradeLegToDbFields(secondBuffer.trade.down);
   secondBuffer = createEmptySecondBuffer();
   return {
     ts_ms,
@@ -270,6 +313,14 @@ function buildAggregatedTickRow(ts_ms, market_slug, btc_usd) {
     down_ask: down.ask,
     down_mid: down.mid,
     btc_usd,
+    up_trade_buy_shares: upTr.buyShares,
+    up_trade_sell_shares: upTr.sellShares,
+    up_trade_buy_usd: upTr.buyUsd,
+    up_trade_sell_usd: upTr.sellUsd,
+    down_trade_buy_shares: dnTr.buyShares,
+    down_trade_sell_shares: dnTr.sellShares,
+    down_trade_buy_usd: dnTr.buyUsd,
+    down_trade_sell_usd: dnTr.sellUsd,
   };
 }
 
@@ -576,11 +627,20 @@ async function ensureDb() {
       down_ask DECIMAL(14,8) NULL,
       down_mid DECIMAL(14,8) NULL,
       btc_usd DECIMAL(24,8) NULL,
+      up_trade_buy_shares DECIMAL(24,8) NOT NULL DEFAULT 0,
+      up_trade_sell_shares DECIMAL(24,8) NOT NULL DEFAULT 0,
+      up_trade_buy_usd DECIMAL(24,8) NOT NULL DEFAULT 0,
+      up_trade_sell_usd DECIMAL(24,8) NOT NULL DEFAULT 0,
+      down_trade_buy_shares DECIMAL(24,8) NOT NULL DEFAULT 0,
+      down_trade_sell_shares DECIMAL(24,8) NOT NULL DEFAULT 0,
+      down_trade_buy_usd DECIMAL(24,8) NOT NULL DEFAULT 0,
+      down_trade_sell_usd DECIMAL(24,8) NOT NULL DEFAULT 0,
       PRIMARY KEY (id),
       KEY idx_ts (ts_ms),
       KEY idx_slug_ts (market_slug(191), ts_ms)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  await migratePmBookTicksTradeVolumeColumns();
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS btc_abs_spread_5m (
       market_slug VARCHAR(512) NOT NULL,
@@ -607,6 +667,37 @@ async function ensureDb() {
   `);
   await migrateCalcPresetsFromJsonIfNeeded();
 }
+
+/** 已有库补成交列（新装由 CREATE TABLE 已含） */
+async function migratePmBookTicksTradeVolumeColumns() {
+  if (!pool) return;
+  const alters = [
+    "ADD COLUMN up_trade_buy_shares DECIMAL(24,8) NOT NULL DEFAULT 0",
+    "ADD COLUMN up_trade_sell_shares DECIMAL(24,8) NOT NULL DEFAULT 0",
+    "ADD COLUMN up_trade_buy_usd DECIMAL(24,8) NOT NULL DEFAULT 0",
+    "ADD COLUMN up_trade_sell_usd DECIMAL(24,8) NOT NULL DEFAULT 0",
+    "ADD COLUMN down_trade_buy_shares DECIMAL(24,8) NOT NULL DEFAULT 0",
+    "ADD COLUMN down_trade_sell_shares DECIMAL(24,8) NOT NULL DEFAULT 0",
+    "ADD COLUMN down_trade_buy_usd DECIMAL(24,8) NOT NULL DEFAULT 0",
+    "ADD COLUMN down_trade_sell_usd DECIMAL(24,8) NOT NULL DEFAULT 0",
+  ];
+  for (const clause of alters) {
+    try {
+      await pool.execute(`ALTER TABLE pm_book_ticks ${clause}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/duplicate column/i.test(msg)) {
+        console.warn("[charts-btc] pm_book_ticks migrate trade cols:", msg);
+      }
+    }
+  }
+}
+
+/** pm_book_ticks 查询列（含秒级成交） */
+const PM_BOOK_TICK_SELECT_COLS =
+  "ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd, " +
+  "up_trade_buy_shares, up_trade_sell_shares, up_trade_buy_usd, up_trade_sell_usd, " +
+  "down_trade_buy_shares, down_trade_sell_shares, down_trade_buy_usd, down_trade_sell_usd";
 
 async function pruneOldDbRows() {
   if (!pool) return;
@@ -832,8 +923,10 @@ async function fetchCalcPresetsFromDb() {
 async function insertTick(row) {
   if (!pool) return;
   const sql = `INSERT INTO pm_book_ticks
-    (ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    (ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd,
+     up_trade_buy_shares, up_trade_sell_shares, up_trade_buy_usd, up_trade_sell_usd,
+     down_trade_buy_shares, down_trade_sell_shares, down_trade_buy_usd, down_trade_sell_usd)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
   await pool.execute(sql, [
     row.ts_ms,
     row.market_slug,
@@ -844,6 +937,14 @@ async function insertTick(row) {
     row.down_ask,
     row.down_mid,
     row.btc_usd,
+    row.up_trade_buy_shares ?? 0,
+    row.up_trade_sell_shares ?? 0,
+    row.up_trade_buy_usd ?? 0,
+    row.up_trade_sell_usd ?? 0,
+    row.down_trade_buy_shares ?? 0,
+    row.down_trade_sell_shares ?? 0,
+    row.down_trade_buy_usd ?? 0,
+    row.down_trade_sell_usd ?? 0,
   ]);
 }
 
@@ -1110,27 +1211,29 @@ function clampWindowListLimit(raw) {
 async function fetchTicksRows(q) {
   if (!pool) return [];
   const { safeLimit, sinceMs, slug } = q;
+  const mapRows = (rows) =>
+    (Array.isArray(rows) ? rows : []).map((row) => normalizePmBookTickRow(row));
   if (sinceMs != null && Number.isFinite(sinceMs)) {
     const [rows] = await pool.execute(
-      `SELECT ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd
+      `SELECT ${PM_BOOK_TICK_SELECT_COLS}
        FROM pm_book_ticks WHERE ts_ms >= ? ORDER BY ts_ms ASC LIMIT ${safeLimit}`,
       [Math.floor(sinceMs)],
     );
-    return rows;
+    return mapRows(rows);
   }
   if (slug) {
     const [rows] = await pool.execute(
-      `SELECT ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd
+      `SELECT ${PM_BOOK_TICK_SELECT_COLS}
        FROM pm_book_ticks WHERE market_slug = ? ORDER BY ts_ms ASC LIMIT ${safeLimit}`,
       [slug],
     );
-    return rows;
+    return mapRows(rows);
   }
   const [rows] = await pool.query(
-    `SELECT ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd
+    `SELECT ${PM_BOOK_TICK_SELECT_COLS}
      FROM pm_book_ticks ORDER BY ts_ms DESC LIMIT ${safeLimit}`,
   );
-  return rows.reverse();
+  return mapRows(rows.reverse());
 }
 
 /**
@@ -1164,9 +1267,13 @@ async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
     const placeholders = chunk.map(() => "?").join(",");
     return pool
       .query(
-        `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd
+        `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd,
+           z.up_trade_buy_shares, z.up_trade_sell_shares, z.up_trade_buy_usd, z.up_trade_sell_usd,
+           z.down_trade_buy_shares, z.down_trade_sell_shares, z.down_trade_buy_usd, z.down_trade_sell_usd
        FROM (
          SELECT t.ts_ms, t.market_slug, t.up_bid, t.up_ask, t.up_mid, t.down_bid, t.down_ask, t.down_mid, t.btc_usd,
+           t.up_trade_buy_shares, t.up_trade_sell_shares, t.up_trade_buy_usd, t.up_trade_sell_usd,
+           t.down_trade_buy_shares, t.down_trade_sell_shares, t.down_trade_buy_usd, t.down_trade_sell_usd,
            ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn_a,
            ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms DESC) AS rn_d
          FROM pm_book_ticks t
@@ -1221,6 +1328,32 @@ function jsonSafeFiniteNum(v) {
   }
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/** WSS/HTTP 下发的 tick 行：统一数值类型，保证成交字段存在 */
+function normalizePmBookTickRow(row) {
+  const r = row && typeof row === "object" ? /** @type {Record<string, unknown>} */ (row) : {};
+  const tradeShares = (k) => jsonSafeFiniteNum(r[k]) ?? 0;
+  const tradeUsd = (k) => jsonSafeFiniteNum(r[k]) ?? 0;
+  return {
+    ts_ms: jsonSafeFiniteNum(r.ts_ms),
+    market_slug: typeof r.market_slug === "string" ? r.market_slug : "",
+    up_bid: jsonSafeFiniteNum(r.up_bid),
+    up_ask: jsonSafeFiniteNum(r.up_ask),
+    up_mid: jsonSafeFiniteNum(r.up_mid),
+    down_bid: jsonSafeFiniteNum(r.down_bid),
+    down_ask: jsonSafeFiniteNum(r.down_ask),
+    down_mid: jsonSafeFiniteNum(r.down_mid),
+    btc_usd: jsonSafeFiniteNum(r.btc_usd),
+    up_trade_buy_shares: tradeShares("up_trade_buy_shares"),
+    up_trade_sell_shares: tradeShares("up_trade_sell_shares"),
+    up_trade_buy_usd: tradeUsd("up_trade_buy_usd"),
+    up_trade_sell_usd: tradeUsd("up_trade_sell_usd"),
+    down_trade_buy_shares: tradeShares("down_trade_buy_shares"),
+    down_trade_sell_shares: tradeShares("down_trade_sell_shares"),
+    down_trade_buy_usd: tradeUsd("down_trade_buy_usd"),
+    down_trade_sell_usd: tradeUsd("down_trade_sell_usd"),
+  };
 }
 
 /**
@@ -1877,6 +2010,10 @@ async function handleChartSubscribe(ws, msg) {
   );
 }
 
+function chartTickForWire(row) {
+  return normalizePmBookTickRow(row);
+}
+
 function broadcastHealthToAllChartClients() {
   const payload = JSON.stringify({ type: "health", ...buildHealthPayload() });
   for (const client of wssChart.clients) {
@@ -1893,14 +2030,15 @@ function broadcastHealthToAllChartClients() {
  * @param {Record<string, unknown>} row
  */
 function broadcastChartTick(row) {
-  const slug = row.market_slug;
-  if (typeof slug !== "string" || !slug) return;
+  const tick = chartTickForWire(row);
+  const slug = tick.market_slug;
+  if (!slug) return;
   for (const client of wssChart.clients) {
     if (client.readyState !== WebSocket.OPEN) continue;
     const sub = client._chartSub;
     if (!sub?.live || sub.slug !== slug) continue;
     try {
-      client.send(JSON.stringify({ type: "tick", tick: row }));
+      client.send(JSON.stringify({ type: "tick", tick }));
     } catch (e) {
       console.error("[charts-btc] ws chart broadcast", e);
     }
