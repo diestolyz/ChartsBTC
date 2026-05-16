@@ -1418,7 +1418,7 @@ function applySingleCalcResult(r, params) {
     const exitKind = /** @type {{ exitKind?: string }} */ (r).exitKind;
     const exitNote =
       exitKind === "stop"
-        ? "（止损·mid 破线·固定比例）"
+        ? "（止损·下穿后下一帧）"
         : exitKind === "abs_cl"
           ? "（|BTC差价|低于阈值·该点平仓）"
           : "";

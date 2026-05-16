@@ -122,7 +122,7 @@ function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
  * @property {number} [pairBuyMinAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| ≥ 该值（美元）的 tick 上允许触发买；无有效 btc 差价数据则不触发；0 关闭
  * @property {number} [pairBuyMaxAbsChainlinkUsd] — >0 时：仅在 |现货−开盘| 严格小于该值（美元）的 tick 上允许触发买；0 关闭上界
  * @property {boolean} [advancedPairSell] — 为真时启用 `pairStopPriceUsd` 止损（参考买一）
- * @property {number} [pairStopPriceUsd] — 止损绝对价格（USD，0~1）；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid（买 Up 只看 Up、买 Down 只看 Down）。若曾 **≤ P_stop(=本字段)** 则记止损平仓，并按该止损价结算：盈亏 = (P_stop − P_entry)×份数。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现破止损，则按**首次破止损**计，不按限价止盈盈利。
+ * @property {number} [pairStopPriceUsd] — 止损线（USD，0~1）；勾选 `advancedPairSell` 时：买入后仅扫描**已买入那一腿**的 mid。**下穿**触发：相邻 tick 上前一帧已买侧 mid **严格高于** P_stop、当前帧 **≤ P_stop**。平仓价取**下穿当刻的下一帧**该侧买一（无则用 mid）；若无下一帧则回退为下穿当刻买一/mid。盈亏 = (P_exit − P_entry)×份数。**整窗回看**：若曾先达到卖出限价、之后同一窗口内仍出现下穿止损，则按**首次下穿**计，不按限价止盈盈利。
  * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  * @property {number} [feeUsd] — 固定手续费（USD）。只要触发买入（最终处于 closed/float），统一计入：netUsd = 原netUsd − feeUsd（即盈利扣手续费、亏损叠加手续费）。
  * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
@@ -134,7 +134,7 @@ function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
  * @param {unknown[]} rows
  * @param {string | null} slug
  * @param {LegPairPnlOpts} [opts]
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "abs_cl" }} P_entry 为盈亏基数：**高价买与低价买规则相同**——优先取距开盘秒数 ≥ 买点秒+1 的首条采样上已买侧 mid；若无则回退买点当刻已买侧 mid；若上述采样价 **低于** 页面「买入限价」则入账价 **按买入限价**（不低于限价计入）。再不行则用买入限价本身。止盈/止损扫描自所选入账采样对应 tick 之后开始。`closed` 时 P_exit 为平仓价。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损价则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "abs_cl" }} P_entry 为盈亏基数：**高价买与低价买规则相同**——优先取距开盘秒数 ≥ 买点秒+1 的首条采样上已买侧 mid；若无则回退买点当刻已买侧 mid；若上述采样价 **低于** 页面「买入限价」则入账价 **按买入限价**（不低于限价计入）。再不行则用买入限价本身。止盈/止损扫描自所选入账采样对应 tick 之后开始。`closed` 时 P_exit 为平仓价（止损为下穿后下一帧价）。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损线则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
  */
 export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N, opts = {}) {
   if (!slug || typeof slug !== "string") {
@@ -332,12 +332,22 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   /** 止损价（绝对 USD，0~1）。仅看买入腿 mid */
   const stopLinePx = stopOn ? stopPx : null;
 
-  /** 各自首次触发的 tick 索引（整窗扫描，用于「先止盈后仍破止损」等回看） */
+  /** 各自首次触发的 tick 索引（整窗扫描，用于「先止盈后仍下穿止损」等回看）；止损为「下穿」当刻的 j */
   let firstStopJ = -1;
   let firstLimitJ = -1;
   let firstAbsClExitJ = -1;
   /** 卖价 1 / 0.01：不按限价在窗内止盈，固定未平仓并按 Chainlink 差价结算 */
   const suppressLimitExit = isSellPriceChainlinkFloatMode(P_sellTarget);
+
+  /** 入账 tick 上一帧的已买侧 mid，用于首帧「下穿」判定 */
+  let prevLegMid =
+    exitStartJ > 0
+      ? (() => {
+          const pr = points[exitStartJ - 1];
+          const v = leg === "up" ? pr.u : pr.d;
+          return v != null && v > 0 && v < 1 - eps ? v : null;
+        })()
+      : null;
 
   for (let j = exitStartJ; j < points.length; j++) {
     const q = points[j];
@@ -349,9 +359,17 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     const ref =
       bid != null && bid > 0 ? bid : px != null && px > 0 && px < 1 ? px : null;
 
-    if (stopOn && stopLinePx != null && px != null && px <= stopLinePx + eps) {
+    if (
+      stopOn &&
+      stopLinePx != null &&
+      prevLegMid != null &&
+      prevLegMid > stopLinePx + eps &&
+      px != null &&
+      px <= stopLinePx + eps
+    ) {
       if (firstStopJ < 0) firstStopJ = j;
     }
+    if (px != null && px > 0 && px < 1 - eps) prevLegMid = px;
     if (
       exitAbsClOn &&
       exitAbsClThreshold != null &&
@@ -365,7 +383,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     }
   }
 
-  /** 曾先达到限价止盈、之后又破止损 → 按首次破止损计，不按止盈 */
+  /** 曾先达到限价止盈、之后又下穿止损 → 按首次下穿计，不按止盈 */
   const lateStopAfterLimit =
     stopOn && firstStopJ >= 0 && firstLimitJ >= 0 && firstStopJ > firstLimitJ;
 
@@ -392,15 +410,23 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   }
 
   if (exitPickKind != null && exitPickJ >= 0) {
-    const q = points[exitPickJ];
+    /** 止损：下穿为启动点，平仓价取启动点下一帧（无下一帧则回退下穿当刻） */
+    const jExec =
+      exitPickKind === "stop" && stopOn
+        ? exitPickJ + 1 < points.length
+          ? exitPickJ + 1
+          : exitPickJ
+        : exitPickJ;
+    const q = points[jExec];
     const px = leg === "up" ? q.u : q.d;
     const bid = leg === "up" ? q.ub : q.db;
     const ref =
       bid != null && bid > 0 ? bid : px != null && px > 0 && px < 1 ? px : null;
-    sellIdx = exitPickJ;
+    sellIdx = jExec;
     if (exitPickKind === "stop") {
       exitKind = "stop";
-      exitPrice = stopPx != null ? stopPx : ref != null ? ref : px;
+      exitPrice =
+        ref != null ? ref : px != null && px > 0 && px <= 1 + eps ? px : P_entry;
     } else if (exitPickKind === "limit") {
       exitKind = "limit";
       exitPrice = P_sellTarget;
@@ -414,10 +440,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   if (sellIdx >= 0 && exitPrice != null) {
     const q = points[sellIdx];
     const t_exit = q.sec;
-    let profit =
-      exitKind === "stop" && stopOn && stopPx != null
-        ? N * (stopPx - P_entry)
-        : N * (exitPrice - P_entry);
+    let profit = N * (exitPrice - P_entry);
     if (fixedLossUsd > 0 && profit < 0) profit = -fixedLossUsd;
     if (feeUsd > 0) profit -= feeUsd;
     return {
