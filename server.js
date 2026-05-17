@@ -1657,7 +1657,7 @@ api.get("/btc-abs-spread-5m", async (req, res) => {
 
 /**
  * @param {unknown} raw
- * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairHighBuyNoAboveBeforeCross: boolean, advancedPairSell: boolean, pairStopPriceUsd: number, pairExitAbsClBelowUsd: number, pairFixedLossUsd: number, feeUsd: number } | null}
+ * @returns {{ P_buyLimit: number, t0: number, t1: number, P_sellTarget: number, N: number, fullBatch: boolean, pairBuyMinAbsChainlinkUsd: number, pairBuyMaxAbsChainlinkUsd: number, pairHighBuyNoAboveBeforeCross: boolean, pairHighBuyMaxAbsClBeforeNotAboveBuy: boolean, advancedPairSell: boolean, pairStopPriceUsd: number, pairExitAbsClBelowUsd: number, pairFixedLossUsd: number, feeUsd: number } | null}
  */
 function normalizeCalcPresetParams(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -1727,10 +1727,19 @@ function normalizeLegPairOpts(raw) {
     vNoAbove === false || vNoAbove === 0 || vNoAbove === "0" || vNoAbove === "false"
       ? false
       : true;
+  const vMaxClBefore = o.pairHighBuyMaxAbsClBeforeNotAboveBuy;
+  const pairHighBuyMaxAbsClBeforeNotAboveBuy =
+    vMaxClBefore === false ||
+    vMaxClBefore === 0 ||
+    vMaxClBefore === "0" ||
+    vMaxClBefore === "false"
+      ? false
+      : true;
   return {
     pairBuyMinAbsChainlinkUsd: minCl,
     pairBuyMaxAbsChainlinkUsd: maxCl,
     pairHighBuyNoAboveBeforeCross,
+    pairHighBuyMaxAbsClBeforeNotAboveBuy,
     advancedPairSell,
     pairStopPriceUsd: stop,
     pairExitAbsClBelowUsd: exitAbsCl,

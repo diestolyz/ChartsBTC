@@ -1,5 +1,5 @@
 /**
- * 通过 WSS /ws/chart 订阅图表数据（快照 + 实时增量 + health 推送），用 Chart.js 在 #chart 绘制：Up/Down 卖一、Chainlink 差价、Up/Down 各自 BUY/SELL 成交量（USD）；X 轴均为距开盘 0–300s。
+ * 通过 WSS /ws/chart 订阅图表数据（快照全量 + 实时 tick 增量绘表 + health）；Chart.js：Up/Down、Chainlink 差价、成交量；缓冲 300–600 条/盘。
  * 仅 `/api/market-windows/timeline`（懒加载）、`/api/ui-settings` 与刷新用 HTTP；图表主路径为 WSS。
  */
 
@@ -136,6 +136,24 @@ const CHART_VOL_ZONE_RATIO = 0.25;
 const CHART_ZONE_GAP_PX = 8;
 /** 成交量 yVol 轴 max = 数据峰值 × 该倍数，使面积落在刻度区下方约 1/倍数 高度 */
 const CHART_VOL_Y_MAX_MULTIPLIER = 5;
+/** 实时图 WSS / tickBuffer 条数（5 分钟盘约 300 点；与全量「市场个数」可共用输入框但图表侧封顶） */
+const CHART_TICK_LIMIT_MIN = 300;
+const CHART_TICK_LIMIT_MAX = 600;
+const CHART_TICK_LIMIT_DEFAULT = 400;
+/** 合并 tick 后 chart.update 最小间隔（≈4 次/秒） */
+const CHART_UPDATE_MIN_INTERVAL_MS = 250;
+
+/** 实时增量绘图：snapshot 之后为 true；换盘/归档 snapshot 时 false 并全量 applyRows */
+let chartIncrementalLive = false;
+/** @type {string | null} */
+let chartRenderSlug = null;
+/** @type {number | null} */
+let chartRenderOpen = null;
+let chartVolPeakLive = 0;
+let chartUpdateDirty = false;
+/** @type {number | null} */
+let chartUpdateRaf = null;
+let chartUpdateLastMs = 0;
 
 /**
  * @param {{ top: number; bottom: number; left: number; right: number }} ca
@@ -210,6 +228,173 @@ function scheduleArchiveChartRelayout(rows, marketSlug) {
     applyYVolScaleLimits(volumeTradeUsdPeak(rows, slug));
     chart.update();
   });
+}
+
+function cancelScheduledChartUpdate() {
+  if (chartUpdateRaf != null) {
+    cancelAnimationFrame(chartUpdateRaf);
+    chartUpdateRaf = null;
+  }
+  chartUpdateDirty = false;
+}
+
+function flushChartUpdateNow() {
+  chartUpdateDirty = false;
+  chartUpdateLastMs = performance.now();
+  applyYVolScaleLimits(chartVolPeakLive);
+  chart.update("none");
+}
+
+function runScheduledChartUpdate() {
+  chartUpdateRaf = null;
+  if (!chartUpdateDirty) return;
+  const now = performance.now();
+  const elapsed = now - chartUpdateLastMs;
+  if (elapsed < CHART_UPDATE_MIN_INTERVAL_MS) {
+    setTimeout(() => scheduleChartUpdate(), CHART_UPDATE_MIN_INTERVAL_MS - elapsed);
+    return;
+  }
+  flushChartUpdateNow();
+}
+
+/** rAF 合并同帧多 tick；并限制 chart.update 频率 */
+function scheduleChartUpdate() {
+  chartUpdateDirty = true;
+  if (chartUpdateRaf != null) return;
+  chartUpdateRaf = requestAnimationFrame(runScheduledChartUpdate);
+}
+
+/**
+ * @param {{ x: number; y: number }[]} dataArr
+ * @param {number} x
+ * @param {number | null} y
+ */
+function upsertChartPoint(dataArr, x, y) {
+  if (y == null || !Number.isFinite(y)) return;
+  const last = dataArr[dataArr.length - 1];
+  if (last && Math.abs(last.x - x) < 1e-9) {
+    last.y = y;
+    return;
+  }
+  dataArr.push({ x, y });
+}
+
+/** 缓冲 shift 后：按时间轴删掉早于当前首条 tick 的点（与条数未必 1:1） */
+function trimChartDatasetsBeforeSec(minSec) {
+  if (!Number.isFinite(minSec)) return;
+  for (const ds of chart.data.datasets) {
+    const data = ds.data;
+    let i = 0;
+    while (i < data.length && data[i].x < minSec - 1e-9) i += 1;
+    if (i > 0) data.splice(0, i);
+  }
+}
+
+function bumpVolPeakFromRow(rec) {
+  for (const k of [
+    "up_trade_buy_usd",
+    "up_trade_sell_usd",
+    "down_trade_buy_usd",
+    "down_trade_sell_usd",
+  ]) {
+    const v = num(rec[k]);
+    if (v != null && v > chartVolPeakLive) chartVolPeakLive = v;
+  }
+}
+
+/**
+ * 状态栏 Up/Down/BTC：与图表窗内末点一致；BTC 差价可单独传入（自尾向前末条有效现货）。
+ * @param {Record<string, unknown>} row
+ * @param {number | null} open
+ * @param {{ useHealthDelta?: boolean; lastBtcPx?: number | null }} [opts]
+ */
+function paintLiveLabelsFromRow(row, open, opts = {}) {
+  const { useHealthDelta = false, lastBtcPx = null } = opts;
+  liveUp.textContent = num(row.up_mid) != null ? num(row.up_mid).toFixed(4) : "—";
+  liveDown.textContent = num(row.down_mid) != null ? num(row.down_mid).toFixed(4) : "—";
+  const px = lastBtcPx != null ? lastBtcPx : num(row.btc_usd);
+  if (px != null && open != null) {
+    liveBtc.textContent = formatUsdDelta(px - open);
+  } else if (px != null) {
+    liveBtc.textContent = "—";
+  } else {
+    liveBtc.textContent = "—";
+  }
+  // 实时盘：优先 health（更贴 RTDS）；归档勿用当前活跃盘 health（增量 refactor 曾漏 !fromArchive）
+  if (
+    useHealthDelta &&
+    lastHealthJson?.btcDeltaUsd != null &&
+    Number.isFinite(Number(lastHealthJson.btcDeltaUsd))
+  ) {
+    liveBtc.textContent = formatUsdDelta(Number(lastHealthJson.btcDeltaUsd));
+  }
+}
+
+/**
+ * 窗内 [0, WINDOW_SEC] 自尾向前：末条 tick（Up/Down 状态栏）与末条有效 btc_usd（差价）。
+ * @param {unknown[]} rows
+ * @param {string | null} slugResolved
+ */
+function lastLabelsInChartWindow(rows, slugResolved) {
+  /** @type {Record<string, unknown> | null} */
+  let row = null;
+  let lastBtcPx = null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = /** @type {Record<string, unknown>} */ (rows[i]);
+    const ts = num(r.ts_ms);
+    if (ts == null) continue;
+    const sec = secondsFromWindowOpen(ts, slugResolved, rows);
+    if (sec < 0 || sec > WINDOW_SEC) continue;
+    if (row == null) row = r;
+    if (lastBtcPx == null) {
+      const b = num(r.btc_usd);
+      if (b != null) lastBtcPx = b;
+    }
+    if (row != null && lastBtcPx != null) break;
+  }
+  return { row, lastBtcPx };
+}
+
+/**
+ * 实时单条 tick：只改 Chart.js datasets，不扫全缓冲。
+ * @param {Record<string, unknown>} row
+ * @param {string | null} slug
+ */
+function appendLiveTickToChart(row, slug) {
+  const slugResolved = resolveMarketSlugForRows(slug, tickBuffer);
+  const ts = num(row.ts_ms);
+  if (ts == null) return;
+  const sec = secondsFromWindowOpen(ts, slugResolved, tickBuffer);
+  if (sec < 0 || sec > WINDOW_SEC) return;
+  const x = sec;
+  const open = chartRenderOpen ?? chainlinkOpenUsd;
+  const u = num(row.up_mid);
+  const d = num(row.down_mid);
+  const b = num(row.btc_usd);
+  upsertChartPoint(chart.data.datasets[0].data, x, u);
+  upsertChartPoint(chart.data.datasets[1].data, x, d);
+  if (b != null) {
+    upsertChartPoint(chart.data.datasets[2].data, x, open != null ? b - open : b);
+  }
+  upsertChartPoint(chart.data.datasets[3].data, x, num(row.up_trade_buy_usd) ?? 0);
+  upsertChartPoint(chart.data.datasets[4].data, x, num(row.up_trade_sell_usd) ?? 0);
+  upsertChartPoint(chart.data.datasets[5].data, x, num(row.down_trade_buy_usd) ?? 0);
+  upsertChartPoint(chart.data.datasets[6].data, x, num(row.down_trade_sell_usd) ?? 0);
+  bumpVolPeakFromRow(row);
+  paintLiveLabelsFromRow(row, open, { useHealthDelta: true });
+}
+
+/**
+ * @param {unknown[]} rows
+ * @param {string | null} slugResolved
+ * @param {boolean} fromArchive
+ * @param {number | null} open
+ */
+function syncChartRenderStateAfterApply(rows, slugResolved, fromArchive, open) {
+  chartRenderSlug = slugResolved;
+  chartRenderOpen = open ?? chainlinkOpenUsd;
+  chartVolPeakLive = volumeTradeUsdPeak(rows, slugResolved);
+  chartIncrementalLive = !fromArchive;
 }
 
 const chart = new Chart(chartCanvas, {
@@ -433,6 +618,7 @@ function volumeTradeUsdPeak(rows, marketSlug) {
  * @param {string | null} marketSlug - 用于解析窗口起点（slug 尾缀 unix）
  */
 function applyRows(rows, fromArchive = false, marketSlug = null, archiveOpenOverride = null) {
+  cancelScheduledChartUpdate();
   const slugResolved = resolveMarketSlugForRows(marketSlug, rows);
   const tUp = [];
   const tDown = [];
@@ -472,8 +658,12 @@ function applyRows(rows, fromArchive = false, marketSlug = null, archiveOpenOver
   chart.data.datasets[2].data = tBtc;
   const ds2 = chart.data.datasets[2];
   if (open != null) {
-    ds2.label = fromArchive ? "Chainlink 差价 (USD，首条为基准)" : "Chainlink 差价 (USD)";
-    chart.options.scales.y1.title.text = fromArchive ? "相对首条记录 (USD)" : "相对开盘 (USD)";
+    ds2.label = fromArchive
+      ? "Chainlink 差价 (USD，相对官方开盘)"
+      : "Chainlink 差价 (USD)";
+    chart.options.scales.y1.title.text = fromArchive
+      ? "相对官方开盘 (USD)"
+      : "相对开盘 (USD)";
   } else {
     ds2.label = "BTC USD (Chainlink)";
     chart.options.scales.y1.title.text = "BTC / USD";
@@ -486,35 +676,23 @@ function applyRows(rows, fromArchive = false, marketSlug = null, archiveOpenOver
   const volPeak = volumeTradeUsdPeak(rows, slugResolved);
   applyYVolScaleLimits(volPeak);
   chart.update("none");
+  syncChartRenderStateAfterApply(rows, slugResolved, fromArchive, open);
   if (fromArchive) scheduleArchiveChartRelayout(rows, slugResolved);
 
-  const last = rows[rows.length - 1];
-  if (last) {
-    liveUp.textContent = num(last.up_mid) != null ? num(last.up_mid).toFixed(4) : "—";
-    liveDown.textContent = num(last.down_mid) != null ? num(last.down_mid).toFixed(4) : "—";
-    const lastPx = num(last.btc_usd);
-    if (lastPx != null && open != null) {
-      liveBtc.textContent = formatUsdDelta(lastPx - open);
-    } else if (lastPx != null) {
-      liveBtc.textContent = "—";
-    } else {
-      liveBtc.textContent = "—";
-    }
+  const { row: lastInWin, lastBtcPx } = lastLabelsInChartWindow(rows, slugResolved);
+  if (lastInWin) {
+    paintLiveLabelsFromRow(lastInWin, open, {
+      useHealthDelta: !fromArchive,
+      lastBtcPx,
+    });
   }
-
-  // 实时盘：优先用 health 的差价（更接近 RTDS 最新值；tick 仅每秒入库，可能滞后/缺样本）。
-  if (
-    !fromArchive &&
-    lastHealthJson?.btcDeltaUsd != null &&
-    Number.isFinite(Number(lastHealthJson.btcDeltaUsd))
-  ) {
-    liveBtc.textContent = formatUsdDelta(Number(lastHealthJson.btcDeltaUsd));
-  }
-
 }
 
-function getTickLimit() {
-  return Math.min(50000, Math.max(60, Number(limitInput.value) || 1800));
+/** 图表 WSS 缓冲条数（封顶 300–600；全量批次数仍用 getArchivedMarketsLimit） */
+function getChartTickLimit() {
+  const raw = Number(limitInput?.value);
+  const v = Number.isFinite(raw) ? raw : CHART_TICK_LIMIT_DEFAULT;
+  return Math.min(CHART_TICK_LIMIT_MAX, Math.max(CHART_TICK_LIMIT_MIN, Math.floor(v)));
 }
 
 /** 与页头「时间跨度」一致：懒加载时间线条数、与「计算全量」的 windowsLimit（`/api/market-windows/timeline`）。 */
@@ -529,7 +707,7 @@ function chartWsUrl() {
 
 function sendChartSubscribe() {
   if (!chartWs || chartWs.readyState !== WebSocket.OPEN) return;
-  const lim = getTickLimit();
+  const lim = getChartTickLimit();
   const slug =
     chartSlugOverride != null && chartSlugOverride !== "" ? chartSlugOverride : "";
   chartWs.send(JSON.stringify({ op: "subscribe", limit: lim, slug }));
@@ -571,7 +749,11 @@ function connectChartWs() {
       return;
     }
     if (msg.type === "snapshot") {
+      cancelScheduledChartUpdate();
+      chartIncrementalLive = false;
       tickBuffer = Array.isArray(msg.ticks) ? msg.ticks.slice() : [];
+      const snapLim = getChartTickLimit();
+      while (tickBuffer.length > snapLim) tickBuffer.shift();
       const fromArchive =
         msg.mode === "archive" ||
         (chartSlugOverride != null && chartSlugOverride !== "");
@@ -598,9 +780,13 @@ function connectChartWs() {
     } else if (msg.type === "tick") {
       const row = msg.tick;
       if (!row || typeof row !== "object") return;
-      const lim = getTickLimit();
+      const lim = getChartTickLimit();
+      let removed = 0;
       tickBuffer.push(row);
-      while (tickBuffer.length > lim) tickBuffer.shift();
+      while (tickBuffer.length > lim) {
+        tickBuffer.shift();
+        removed += 1;
+      }
       const rowSlug = typeof row.market_slug === "string" ? row.market_slug : null;
       let slugForTicks =
         chartSlugOverride != null && chartSlugOverride !== ""
@@ -610,7 +796,25 @@ function connectChartWs() {
         activeSlug = rowSlug;
         if (slugLabel) slugLabel.textContent = rowSlug;
       }
-      applyRows(tickBuffer, false, slugForTicks);
+      const rec = /** @type {Record<string, unknown>} */ (row);
+      if (
+        chartIncrementalLive &&
+        chartRenderSlug &&
+        slugForTicks &&
+        chartRenderSlug === resolveMarketSlugForRows(slugForTicks, tickBuffer)
+      ) {
+        if (removed > 0 && tickBuffer.length > 0) {
+          const ts0 = num(/** @type {{ ts_ms?: unknown }} */ (tickBuffer[0]).ts_ms);
+          if (ts0 != null) {
+            const minSec = secondsFromWindowOpen(ts0, slugForTicks, tickBuffer);
+            trimChartDatasetsBeforeSec(minSec);
+          }
+        }
+        appendLiveTickToChart(rec, slugForTicks);
+        scheduleChartUpdate();
+      } else {
+        applyRows(tickBuffer, false, slugForTicks);
+      }
       chartStatusLine = `${tickBuffer.length} 条 · 实时 · ${slugForTicks ?? "—"}`;
       paintConnLabel();
     } else if (msg.type === "error") {
@@ -897,6 +1101,9 @@ const calcPairBuyMinAbsCl = document.getElementById("calc-pair-buy-min-abs-cl-us
 const calcPairBuyMaxAbsCl = document.getElementById("calc-pair-buy-max-abs-cl-usd");
 const calcPairHighBuyNoAboveBefore = document.getElementById(
   "calc-pair-high-buy-no-above-before",
+);
+const calcPairHighBuyMaxAbsClBeforeNotAboveBuy = document.getElementById(
+  "calc-pair-high-buy-max-abs-cl-before-not-above-buy",
 );
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
@@ -1301,6 +1508,8 @@ function readLegPairOptsFromForm() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross: calcPairHighBuyNoAboveBefore?.checked !== false,
+    pairHighBuyMaxAbsClBeforeNotAboveBuy:
+      calcPairHighBuyMaxAbsClBeforeNotAboveBuy?.checked !== false,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1361,6 +1570,7 @@ function collectCalcParamsForSave() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
+    pairHighBuyMaxAbsClBeforeNotAboveBuy,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1376,6 +1586,7 @@ function collectCalcParamsForSave() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
+    pairHighBuyMaxAbsClBeforeNotAboveBuy,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1415,6 +1626,12 @@ function applyCalcPresetParams(params) {
     const off =
       v === false || v === 0 || v === "0" || v === "false" || v === "off" || v === "no";
     calcPairHighBuyNoAboveBefore.checked = !off;
+  }
+  if (calcPairHighBuyMaxAbsClBeforeNotAboveBuy) {
+    const v = p.pairHighBuyMaxAbsClBeforeNotAboveBuy;
+    const off =
+      v === false || v === 0 || v === "0" || v === "false" || v === "off" || v === "no";
+    calcPairHighBuyMaxAbsClBeforeNotAboveBuy.checked = !off;
   }
   if (calcAdvancedPairSell) {
     calcAdvancedPairSell.checked =
@@ -1742,6 +1959,7 @@ async function runLegPairCalculator() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
+    pairHighBuyMaxAbsClBeforeNotAboveBuy,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1752,6 +1970,7 @@ async function runLegPairCalculator() {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
+    pairHighBuyMaxAbsClBeforeNotAboveBuy,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1807,6 +2026,7 @@ async function runLegPairCalculator() {
         pairBuyMinAbsChainlinkUsd,
         pairBuyMaxAbsChainlinkUsd,
         pairHighBuyNoAboveBeforeCross,
+        pairHighBuyMaxAbsClBeforeNotAboveBuy,
         advancedPairSell,
         pairStopPriceUsd,
         pairExitAbsClBelowUsd,

@@ -126,6 +126,7 @@ function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
  * @property {number} [pairFixedLossUsd] — 固定亏损金额（USD）。默认 0 关闭；>0 时：只要最终处于 `float`（未平仓），浮亏固定为该金额（netUsd = −pairFixedLossUsd），不再随期末价变化。
  * @property {number} [feeUsd] — 固定手续费（USD）。只要触发买入（最终处于 closed/float），统一计入：netUsd = 原netUsd − feeUsd（即盈利扣手续费、亏损叠加手续费）。
  * @property {boolean} [pairHighBuyNoAboveBeforeCross] — 买入限价 &gt;0.5 时：为真（默认）则定侧后须自盘首至穿入前该侧 mid 从未严格高于限价，否则 `no_buy`；为假则不做该过滤。
+ * @property {boolean} [pairHighBuyMaxAbsClBeforeNotAboveBuy] — 买入限价 &gt;0.5 时：为真（默认）则穿入当刻须有有效 |现货−开盘|，且自盘首至穿入前各 tick 的 |现货−开盘| 最大值不得严格大于穿入当刻 |现货−开盘|；否则跳过该次穿入继续找下一候选。
  * @property {number} [pairExitAbsClBelowUsd] — &gt;0 时：买入后若某 tick 上 |现货−开盘| **严格小于** 该美元值则视为平仓，卖出价取该 tick 已买侧买一（无则用 mid）。与止损、限价按时间先后取最早；0 关闭。
  * @property {number} [chainlinkOpenUsd] — 与页头「开盘 BTC」（`#live-btc-open`）一致时传入（如归档快照 `btcOpenUsd`、实时 health 的开盘）。不传则用首条 tick 的 `btc_usd` 作开盘近似（与归档无官方开盘时页头一致）。
  */
@@ -169,6 +170,15 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const vNoAbove = opts.pairHighBuyNoAboveBeforeCross;
   const highBuyNoAboveBeforeCross =
     vNoAbove === false || vNoAbove === 0 || vNoAbove === "0" || vNoAbove === "false"
+      ? false
+      : true;
+
+  const vMaxClBefore = opts.pairHighBuyMaxAbsClBeforeNotAboveBuy;
+  const highBuyMaxAbsClBeforeNotAboveBuy =
+    vMaxClBefore === false ||
+    vMaxClBefore === 0 ||
+    vMaxClBefore === "0" ||
+    vMaxClBefore === "false"
       ? false
       : true;
 
@@ -248,6 +258,20 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
             return { code: "no_buy", netUsd: 0 };
           }
         }
+      }
+
+      if (highBuyMaxAbsClBeforeNotAboveBuy) {
+        const absAtBuy = p.absCl;
+        if (absAtBuy == null) continue;
+        let maxAbsBefore = 0;
+        let hasAbsBefore = false;
+        for (let k = 0; k < i; k++) {
+          const ac = points[k].absCl;
+          if (ac == null) continue;
+          hasAbsBefore = true;
+          if (ac > maxAbsBefore) maxAbsBefore = ac;
+        }
+        if (hasAbsBefore && maxAbsBefore > absAtBuy + eps) continue;
       }
 
       if (minAbsChainlinkOn && (p.absCl == null || p.absCl < minClUsd - 1e-12)) {
