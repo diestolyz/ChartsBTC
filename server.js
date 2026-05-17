@@ -693,11 +693,18 @@ async function migratePmBookTicksTradeVolumeColumns() {
   }
 }
 
-/** pm_book_ticks 查询列（含秒级成交） */
+/** pm_book_ticks 查询列（含秒级成交，图表 WSS / 单盘 HTTP） */
 const PM_BOOK_TICK_SELECT_COLS =
   "ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd, " +
   "up_trade_buy_shares, up_trade_sell_shares, up_trade_buy_usd, up_trade_sell_usd, " +
   "down_trade_buy_shares, down_trade_sell_shares, down_trade_buy_usd, down_trade_sell_usd";
+
+/** 单侧盈亏全量：不含成交列，减轻窗口函数扫描与传输 */
+const PM_BOOK_TICK_SELECT_COLS_PNL =
+  "ts_ms, market_slug, up_bid, up_ask, up_mid, down_bid, down_ask, down_mid, btc_usd";
+
+/** 5m 盘约 300 秒采样；全量测算只需盘首+盘末覆盖 [0, WINDOW_SEC] */
+const CALC_BATCH_PER_SLUG_TICK_CAP = WINDOW_SEC + 40;
 
 async function pruneOldDbRows() {
   if (!pool) return;
@@ -1198,6 +1205,11 @@ function clampTickLimit(raw) {
   return Math.min(50_000, Math.max(1, x));
 }
 
+/** 全量测算每盘 head+tail 采样上限（与 5 分钟窗口对齐，避免误用「市场个数」等大 tickLimit） */
+function clampCalcBatchPerSlugTickLimit(raw) {
+  return Math.min(clampTickLimit(raw), CALC_BATCH_PER_SLUG_TICK_CAP);
+}
+
 function clampWindowListLimit(raw) {
   const x = Math.floor(Number(raw));
   if (!Number.isFinite(x)) return 96;
@@ -1245,10 +1257,10 @@ async function fetchTicksRows(q) {
  */
 async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
   if (!pool || !slugs.length) return [];
-  const lim = Math.min(50_000, Math.max(1, Math.floor(perSlugLimit)));
+  const lim = clampCalcBatchPerSlugTickLimit(perSlugLimit);
   const headTailN = Math.ceil(lim / 2);
   /** 单次 IN 过长易导致 MySQL / 驱动断连；分块查询后合并 */
-  const SLUG_CHUNK = 120;
+  const SLUG_CHUNK = 160;
   const parallel = Math.min(
     CALC_BATCH_TICK_QUERY_PARALLEL_MAX,
     Math.max(1, Math.floor(CALC_BATCH_TICK_QUERY_PARALLEL)),
@@ -1265,15 +1277,17 @@ async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
    */
   function queryOneChunk(chunk) {
     const placeholders = chunk.map(() => "?").join(",");
+    const innerCols = PM_BOOK_TICK_SELECT_COLS_PNL.split(",")
+      .map((c) => `t.${c.trim()}`)
+      .join(", ");
+    const outerCols = PM_BOOK_TICK_SELECT_COLS_PNL.split(",")
+      .map((c) => `z.${c.trim()}`)
+      .join(", ");
     return pool
       .query(
-        `SELECT DISTINCT z.ts_ms, z.market_slug, z.up_bid, z.up_ask, z.up_mid, z.down_bid, z.down_ask, z.down_mid, z.btc_usd,
-           z.up_trade_buy_shares, z.up_trade_sell_shares, z.up_trade_buy_usd, z.up_trade_sell_usd,
-           z.down_trade_buy_shares, z.down_trade_sell_shares, z.down_trade_buy_usd, z.down_trade_sell_usd
+        `SELECT ${outerCols}
        FROM (
-         SELECT t.ts_ms, t.market_slug, t.up_bid, t.up_ask, t.up_mid, t.down_bid, t.down_ask, t.down_mid, t.btc_usd,
-           t.up_trade_buy_shares, t.up_trade_sell_shares, t.up_trade_buy_usd, t.up_trade_sell_usd,
-           t.down_trade_buy_shares, t.down_trade_sell_shares, t.down_trade_buy_usd, t.down_trade_sell_usd,
+         SELECT ${innerCols},
            ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms ASC) AS rn_a,
            ROW_NUMBER() OVER (PARTITION BY t.market_slug ORDER BY t.ts_ms DESC) AS rn_d
          FROM pm_book_ticks t
@@ -1303,18 +1317,26 @@ async function fetchTicksRowsForSlugs(slugs, perSlugLimit) {
  * @returns {Map<string, unknown[]>}
  */
 function groupTicksBySlug(rows) {
-  /** @type {Map<string, unknown[]>} */
-  const m = new Map();
+  /** @type {Map<string, Map<number, unknown>>} */
+  const bySlugTs = new Map();
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
     const slug = /** @type {{ market_slug?: string }} */ (row).market_slug;
     if (typeof slug !== "string" || !slug) continue;
-    let arr = m.get(slug);
-    if (!arr) {
-      arr = [];
-      m.set(slug, arr);
+    const ts = jsonSafeFiniteNum(/** @type {{ ts_ms?: unknown }} */ (row).ts_ms);
+    if (ts == null) continue;
+    let tsMap = bySlugTs.get(slug);
+    if (!tsMap) {
+      tsMap = new Map();
+      bySlugTs.set(slug, tsMap);
     }
-    arr.push(row);
+    tsMap.set(ts, row);
+  }
+  /** @type {Map<string, unknown[]>} */
+  const m = new Map();
+  for (const [slug, tsMap] of bySlugTs) {
+    const arr = [...tsMap.entries()].sort((a, b) => a[0] - b[0]).map(([, r]) => r);
+    m.set(slug, arr);
   }
   return m;
 }
@@ -1372,7 +1394,7 @@ api.post("/calc-batch", async (req, res) => {
   const P_sellTarget = Number(b.P_sellTarget);
   const N = Number(b.N);
   const windowsLimit = clampWindowListLimit(b.windowsLimit ?? 500);
-  const tickLimit = clampTickLimit(b.tickLimit ?? 50_000);
+  const tickLimit = clampCalcBatchPerSlugTickLimit(b.tickLimit ?? CALC_BATCH_PER_SLUG_TICK_CAP);
 
   if (
     !Number.isFinite(P_buyLimit) ||
@@ -1440,26 +1462,36 @@ api.post("/calc-batch", async (req, res) => {
 
     /** @type {Map<string, { avg: number | null; btcOpen: number | null }>} */
     const spreadBySlug = new Map();
-    if (slugs.length) {
-      const placeholders = slugs.map(() => "?").join(",");
-      const [sRows] = await pool.query(
-        `SELECT market_slug, avg_abs_spread_usd, btc_open_usd
-         FROM btc_abs_spread_5m
-         WHERE market_slug IN (${placeholders})`,
-        slugs,
-      );
-      for (const row of Array.isArray(sRows) ? sRows : []) {
-        if (!row || typeof row !== "object") continue;
-        const s = /** @type {{ market_slug?: unknown }} */ (row).market_slug;
-        if (typeof s !== "string" || !s) continue;
-        spreadBySlug.set(s, {
-          avg: jsonSafeFiniteNum(/** @type {{ avg_abs_spread_usd?: unknown }} */ (row).avg_abs_spread_usd),
-          btcOpen: jsonSafeFiniteNum(/** @type {{ btc_open_usd?: unknown }} */ (row).btc_open_usd),
-        });
-      }
-    }
+    const spreadQuery =
+      slugs.length > 0
+        ? (async () => {
+            const placeholders = slugs.map(() => "?").join(",");
+            const [sRows] = await pool.query(
+              `SELECT market_slug, avg_abs_spread_usd, btc_open_usd
+               FROM btc_abs_spread_5m
+               WHERE market_slug IN (${placeholders})`,
+              slugs,
+            );
+            for (const row of Array.isArray(sRows) ? sRows : []) {
+              if (!row || typeof row !== "object") continue;
+              const s = /** @type {{ market_slug?: unknown }} */ (row).market_slug;
+              if (typeof s !== "string" || !s) continue;
+              spreadBySlug.set(s, {
+                avg: jsonSafeFiniteNum(
+                  /** @type {{ avg_abs_spread_usd?: unknown }} */ (row).avg_abs_spread_usd,
+                ),
+                btcOpen: jsonSafeFiniteNum(
+                  /** @type {{ btc_open_usd?: unknown }} */ (row).btc_open_usd,
+                ),
+              });
+            }
+          })()
+        : Promise.resolve();
 
-    const tickRows = await fetchTicksRowsForSlugs(slugs, tickLimit);
+    const [tickRows] = await Promise.all([
+      fetchTicksRowsForSlugs(slugs, tickLimit),
+      spreadQuery,
+    ]);
     const bySlug = groupTicksBySlug(tickRows);
 
     let total = 0;

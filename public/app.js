@@ -700,6 +700,11 @@ function getArchivedMarketsLimit() {
   return Math.min(20000, Math.max(1, Math.floor(Number(limitInput?.value) || 400)));
 }
 
+/** 全量测算每盘 tick 上限（5m 约 300 点；与 server `CALC_BATCH_PER_SLUG_TICK_CAP` 一致，勿用「市场个数」） */
+function getCalcBatchPerSlugTickLimit() {
+  return WINDOW_SEC + 40;
+}
+
 function chartWsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}/ws/chart`;
@@ -2006,10 +2011,7 @@ async function runLegPairCalculator() {
   setCalcExportRawEnabled(false);
   setCalcOutcome("neutral", "全量计算中…", "");
   try {
-    const tickLimit = Math.min(
-      50000,
-      Math.max(60, Number(limitInput?.value) || 50000),
-    );
+    const tickLimit = getCalcBatchPerSlugTickLimit();
     const windowsLimit = getArchivedMarketsLimit();
     const batchRes = await fetch("/api/calc-batch", {
       method: "POST",
