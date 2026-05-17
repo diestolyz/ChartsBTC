@@ -199,6 +199,23 @@
                     aria-label="买入前校验：若大于 0，仅在当前 tick 的绝对 BTC 差价严格小于该美元值时才允许作为买点。0 表示不限制上界。"
                   />
                 </label>
+                <label class="pair-calculator__check">
+                  <input type="checkbox" id="calc-pair-reverse-dev-on" />
+                  <span>反向偏离率 R（买 Down 看 Up 侧 / 买 Up 看 Down 侧，弦线峰值 ÷ |买点差价|）</span>
+                </label>
+                <label class="field">
+                  R 上限（Up/Down 共用，勾选后生效）
+                  <input
+                    type="number"
+                    id="calc-pair-reverse-dev-max-rate"
+                    min="0"
+                    max="1000"
+                    step="0.01"
+                    value="1"
+                    title="pairReverseDevMaxRate：其它买点条件均通过后，R 须 ≤ 本值；无法算 R 则跳过该候选"
+                    aria-label="反向偏离率上限。勾选启用后：开盘至买点弦线上方（买 Down）或下方（买 Up）最大偏离除以买点绝对差价须不超过本值。"
+                  />
+                </label>
               </div>
             </div>
             <div class="pair-calculator__adv-col" aria-labelledby="pair-calc-adv-sell">

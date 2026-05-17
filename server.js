@@ -1767,11 +1767,25 @@ function normalizeLegPairOpts(raw) {
     vMaxClBefore === "false"
       ? false
       : true;
+  const pairReverseDevOn = Boolean(
+    o.pairReverseDevOn === true ||
+      o.pairReverseDevOn === 1 ||
+      o.pairReverseDevOn === "1" ||
+      o.pairReverseDevOn === "true",
+  );
+  let pairReverseDevMaxRate = num(o.pairReverseDevMaxRate);
+  if (!pairReverseDevOn || pairReverseDevMaxRate == null || pairReverseDevMaxRate <= 0) {
+    pairReverseDevMaxRate = 0;
+  } else {
+    pairReverseDevMaxRate = Math.min(1000, Math.max(1e-9, pairReverseDevMaxRate));
+  }
   return {
     pairBuyMinAbsChainlinkUsd: minCl,
     pairBuyMaxAbsChainlinkUsd: maxCl,
     pairHighBuyNoAboveBeforeCross,
     pairHighBuyMaxAbsClBeforeNotAboveBuy,
+    pairReverseDevOn,
+    pairReverseDevMaxRate,
     advancedPairSell,
     pairStopPriceUsd: stop,
     pairExitAbsClBelowUsd: exitAbsCl,

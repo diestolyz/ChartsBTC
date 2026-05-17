@@ -129,7 +129,39 @@ function chainlinkFloatSettlement(leg, rowsAsc, slug, openBtcFirstTick, opts) {
  * @property {boolean} [pairHighBuyMaxAbsClBeforeNotAboveBuy] — 买入限价 &gt;0.5 时：为真（默认）则穿入当刻须有有效 |现货−开盘|，且自盘首至穿入前各 tick 的 |现货−开盘| 最大值不得严格大于穿入当刻 |现货−开盘|；否则跳过该次穿入继续找下一候选。
  * @property {number} [pairExitAbsClBelowUsd] — &gt;0 时：买入后若某 tick 上 |现货−开盘| **严格小于** 该美元值则视为平仓，卖出价取该 tick 已买侧买一（无则用 mid）。与止损、限价按时间先后取最早；0 关闭。
  * @property {number} [chainlinkOpenUsd] — 与页头「开盘 BTC」（`#live-btc-open`）一致时传入（如归档快照 `btcOpenUsd`、实时 health 的开盘）。不传则用首条 tick 的 `btc_usd` 作开盘近似（与归档无官方开盘时页头一致）。
+ * @property {boolean} [pairReverseDevOn] — 为真且 `pairReverseDevMaxRate` &gt;0 时：在其它买点条件均通过后，校验开盘→买点弦线反向偏离率 R（买 Down 看 Up 侧、买 Up 看 Down 侧）；R 严格大于上限则跳过该候选。
+ * @property {number} [pairReverseDevMaxRate] — 反向偏离率 R 上限（无量纲，Up/Down 共用）；0 或未勾选时关闭。
  */
+
+/**
+ * 买点反向偏离率 R：开盘 (0,0) 与买点 (t_buy, Δ_buy) 连弦线；买 Down 取路径在弦线上方（偏 Up）的峰值，买 Up 取弦线下方（偏 Down）的峰值；R = 峰值 / max(|Δ_buy|, ε)。
+ * @param {"up" | "down"} leg
+ * @param {{ sec: number; delta: number | null }[]} points
+ * @param {number} buyIdx
+ * @returns {number | null} R；无法计算时 null
+ */
+export function reverseDevRatioRAtBuy(leg, points, buyIdx) {
+  const eps = 1e-12;
+  if (buyIdx < 0 || buyIdx >= points.length) return null;
+  const pBuy = points[buyIdx];
+  const deltaBuy = pBuy.delta;
+  if (deltaBuy == null || !Number.isFinite(deltaBuy)) return null;
+  const secBuy = pBuy.sec;
+  if (secBuy <= eps) return null;
+  const denom = Math.abs(deltaBuy);
+  if (denom < eps) return null;
+
+  let peakDev = 0;
+  for (let k = 0; k <= buyIdx; k++) {
+    const dk = points[k].delta;
+    if (dk == null || !Number.isFinite(dk)) continue;
+    const secK = points[k].sec;
+    const onChord = deltaBuy * (secK / secBuy);
+    const dev = leg === "down" ? Math.max(0, dk - onChord) : Math.max(0, onChord - dk);
+    if (dev > peakDev) peakDev = dev;
+  }
+  return peakDev / denom;
+}
 
 /**
  * @param {unknown[]} rows
@@ -182,6 +214,18 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       ? false
       : true;
 
+  const reverseDevOn = Boolean(
+    opts.pairReverseDevOn === true ||
+      opts.pairReverseDevOn === 1 ||
+      opts.pairReverseDevOn === "1" ||
+      opts.pairReverseDevOn === "true",
+  );
+  const reverseDevMaxRRaw = num(opts.pairReverseDevMaxRate);
+  const reverseDevMaxR =
+    reverseDevOn && reverseDevMaxRRaw != null && reverseDevMaxRRaw > 0
+      ? Math.min(1_000, Math.max(1e-9, reverseDevMaxRRaw))
+      : null;
+
   /** 窗口内首条非空 Chainlink 现货，作「开盘」参考（避免首 tick 无 btc 导致全程无差价） */
   let openBtc = null;
   for (const r of rows) {
@@ -208,23 +252,25 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     const sec = secondsFromWindowOpen(ts, slug, rows);
     if (sec < 0 || sec > WINDOW_EFFECTIVE_MAX_SEC) continue;
     let absCl = null;
+    let delta = null;
     if (openBtc != null && lastBtc != null) {
-      absCl = Math.abs(lastBtc - openBtc);
+      delta = lastBtc - openBtc;
+      absCl = Math.abs(delta);
     }
-    points.push({ sec, u, d, ub, db, absCl, btc: lastBtc });
+    points.push({ sec, u, d, ub, db, absCl, delta, btc: lastBtc });
   }
   if (!points.length) {
     return { code: "no_points", netUsd: 0 };
   }
 
   const highBuyMode = P_buyLimit > 0.5 + 1e-12;
+  const eps = 1e-12;
 
   let buyIdx = -1;
   /** 买价 &gt;0.5 时由下方循环写入：'up' | 'down' */
   let highBuyLeg = /** @type {"up" | "down" | null} */ (null);
 
   if (highBuyMode) {
-    const eps = 1e-12;
     for (let i = 1; i < points.length; i++) {
       const p = points[i];
       const prev = points[i - 1];
@@ -281,6 +327,11 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
         continue;
       }
 
+      if (reverseDevMaxR != null) {
+        const rRev = reverseDevRatioRAtBuy(side, points, i);
+        if (rRev == null || rRev > reverseDevMaxR + eps) continue;
+      }
+
       buyIdx = i;
       highBuyLeg = side;
       break;
@@ -297,6 +348,12 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
         continue;
       }
 
+      const side = p.u <= P_buyLimit + eps ? "up" : "down";
+      if (reverseDevMaxR != null) {
+        const rRev = reverseDevRatioRAtBuy(side, points, i);
+        if (rRev == null || rRev > reverseDevMaxR + eps) continue;
+      }
+
       buyIdx = i;
       break;
     }
@@ -308,7 +365,6 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
   const pBuy = points[buyIdx];
   const legUp = highBuyMode ? highBuyLeg === "up" : pBuy.u <= P_buyLimit;
   const leg = legUp ? "up" : "down";
-  const eps = 1e-12;
   const pxAtBuyTick = leg === "up" ? pBuy.u : pBuy.d;
   const buyPxOk = pxAtBuyTick != null && pxAtBuyTick > 0 && pxAtBuyTick < 1 - eps;
   const t_signal = pBuy.sec;

@@ -1110,6 +1110,8 @@ const calcPairHighBuyNoAboveBefore = document.getElementById(
 const calcPairHighBuyMaxAbsClBeforeNotAboveBuy = document.getElementById(
   "calc-pair-high-buy-max-abs-cl-before-not-above-buy",
 );
+const calcPairReverseDevOn = document.getElementById("calc-pair-reverse-dev-on");
+const calcPairReverseDevMaxRate = document.getElementById("calc-pair-reverse-dev-max-rate");
 const calcAdvancedPairSell = document.getElementById("calc-advanced-pair-sell");
 const calcPairStopPriceUsd = document.getElementById("calc-pair-stop-price-usd");
 const calcPairExitAbsClBelowUsd = document.getElementById("calc-pair-exit-abs-cl-below-usd");
@@ -1509,12 +1511,22 @@ function readLegPairOptsFromForm() {
   if (feeForm != null && feeForm > 0) {
     feeUsd = Math.max(0, Math.min(9_999_999, feeForm));
   }
+  const reverseDevOn = Boolean(calcPairReverseDevOn?.checked);
+  let pairReverseDevMaxRate = 0;
+  if (reverseDevOn) {
+    const rRaw = num(calcPairReverseDevMaxRate?.value);
+    if (rRaw != null && rRaw > 0) {
+      pairReverseDevMaxRate = Math.min(1000, Math.max(1e-9, rRaw));
+    }
+  }
   return {
     pairBuyMinAbsChainlinkUsd,
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross: calcPairHighBuyNoAboveBefore?.checked !== false,
     pairHighBuyMaxAbsClBeforeNotAboveBuy:
       calcPairHighBuyMaxAbsClBeforeNotAboveBuy?.checked !== false,
+    pairReverseDevOn: reverseDevOn,
+    pairReverseDevMaxRate,
     advancedPairSell: Boolean(calcAdvancedPairSell?.checked),
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1576,6 +1588,8 @@ function collectCalcParamsForSave() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairHighBuyMaxAbsClBeforeNotAboveBuy,
+    pairReverseDevOn,
+    pairReverseDevMaxRate,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1592,6 +1606,8 @@ function collectCalcParamsForSave() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairHighBuyMaxAbsClBeforeNotAboveBuy,
+    pairReverseDevOn,
+    pairReverseDevMaxRate,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1637,6 +1653,18 @@ function applyCalcPresetParams(params) {
     const off =
       v === false || v === 0 || v === "0" || v === "false" || v === "off" || v === "no";
     calcPairHighBuyMaxAbsClBeforeNotAboveBuy.checked = !off;
+  }
+  if (calcPairReverseDevOn) {
+    calcPairReverseDevOn.checked =
+      p.pairReverseDevOn === true ||
+      p.pairReverseDevOn === 1 ||
+      p.pairReverseDevOn === "1" ||
+      p.pairReverseDevOn === "true";
+  }
+  if (calcPairReverseDevMaxRate) {
+    const r = num(p.pairReverseDevMaxRate);
+    const v = r != null && r > 0 ? Math.min(1000, Math.max(1e-9, r)) : 1;
+    calcPairReverseDevMaxRate.value = String(v);
   }
   if (calcAdvancedPairSell) {
     calcAdvancedPairSell.checked =
@@ -1965,6 +1993,8 @@ async function runLegPairCalculator() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairHighBuyMaxAbsClBeforeNotAboveBuy,
+    pairReverseDevOn,
+    pairReverseDevMaxRate,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -1976,6 +2006,8 @@ async function runLegPairCalculator() {
     pairBuyMaxAbsChainlinkUsd,
     pairHighBuyNoAboveBeforeCross,
     pairHighBuyMaxAbsClBeforeNotAboveBuy,
+    pairReverseDevOn,
+    pairReverseDevMaxRate,
     advancedPairSell,
     pairStopPriceUsd,
     pairExitAbsClBelowUsd,
@@ -2029,6 +2061,8 @@ async function runLegPairCalculator() {
         pairBuyMaxAbsChainlinkUsd,
         pairHighBuyNoAboveBeforeCross,
         pairHighBuyMaxAbsClBeforeNotAboveBuy,
+        pairReverseDevOn,
+        pairReverseDevMaxRate,
         advancedPairSell,
         pairStopPriceUsd,
         pairExitAbsClBelowUsd,
