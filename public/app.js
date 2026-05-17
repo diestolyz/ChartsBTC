@@ -1297,6 +1297,15 @@ function exportCalcBatchToXlsx(payload) {
   return true;
 }
 
+/** 全量明细列表：买入触发点距窗开盘秒数，如 `271s`。 */
+function formatBatchBuySecFromOpen(sec) {
+  const n = Number(sec);
+  if (!Number.isFinite(n)) return "—";
+  const rounded =
+    Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : n.toFixed(1);
+  return `${rounded}s`;
+}
+
 /** 全量盈亏图：X 轴与 tooltip 用本地 24 小时制 */
 function formatBatchChartDateTime(ms, withSeconds) {
   const n = Number(ms);
@@ -2096,9 +2105,13 @@ async function runLegPairCalculator() {
       const tag = row.tag != null ? String(row.tag) : String(row.code ?? "");
       const nu = Number(row.netUsd);
       const usd = Number.isFinite(nu) ? nu : 0;
+      const buySecRaw = Number(row.buySec);
+      const buySecS = Number.isFinite(buySecRaw)
+        ? ` · ${formatBatchBuySecFromOpen(buySecRaw)}`
+        : "";
       const errS =
         row.code === "error" && row.error != null ? ` (${String(row.error)})` : "";
-      return `${timeRange} · ${tag} · ${fmtUsdCalc(usd)}${errS}`;
+      return `${timeRange} · ${tag} · ${fmtUsdCalc(usd)}${buySecS}${errS}`;
     });
     const sign = total >= 0 ? "+" : "";
     const detailShown = detailLines.slice(0, CALC_BATCH_DETAIL_MAX_LINES);

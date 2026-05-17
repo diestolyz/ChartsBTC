@@ -1541,6 +1541,8 @@ api.post("/calc-batch", async (req, res) => {
         if (r.code === "closed" || r.code === "float") {
           one.tickCount = ticks.length;
         }
+        const tBuy = Number(r.t_buy);
+        if (Number.isFinite(tBuy)) one.buySec = tBuy;
         details.push(one);
       } catch (e) {
         nSkip += 1;

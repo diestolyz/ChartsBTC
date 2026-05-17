@@ -167,7 +167,7 @@ export function reverseDevRatioRAtBuy(leg, points, buyIdx) {
  * @param {unknown[]} rows
  * @param {string | null} slug
  * @param {LegPairPnlOpts} [opts]
- * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "abs_cl" }} P_entry 为盈亏基数：**高价买与低价买规则相同**——优先取距开盘秒数 ≥ 买点秒+1 的首条采样上已买侧 mid；若无则回退买点当刻已买侧 mid；若上述采样价 **低于** 页面「买入限价」则入账价 **按买入限价**（不低于限价计入）。再不行则用买入限价本身。止盈/止损扫描自所选入账采样对应 tick 之后开始。`closed` 时 P_exit 为平仓价（止损为下穿后下一帧价）。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损线则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
+ * @returns {{ code: string, netUsd: number, leg?: string, legLabel?: string, P_entry?: number, P_exit?: number, t_buy?: number, t_entry?: number, t_exit?: number, floatLoss?: number, exitKind?: "limit" | "stop" | "abs_cl" }} `t_buy` 为触发买入当刻距窗开盘秒数（`pBuy.sec`）。P_entry 为盈亏基数：**高价买与低价买规则相同**——优先取距开盘秒数 ≥ 买点秒+1 的首条采样上已买侧 mid；若无则回退买点当刻已买侧 mid；若上述采样价 **低于** 页面「买入限价」则入账价 **按买入限价**（不低于限价计入）。再不行则用买入限价本身。止盈/止损扫描自所选入账采样对应 tick 之后开始。`closed` 时 P_exit 为平仓价（止损为下穿后下一帧价）。`float`：窗口末未平仓时若有有效期末价则按「市场结束结算」规则给出 netUsd，并返回 P_exit/t_exit；无有效期末价时回退为全亏 −N×P_entry，若启用止损线则回退为 −N×max(P_entry−P_stop,0)，仅此时带 floatLoss。
  */
 export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarget, N, opts = {}) {
   if (!slug || typeof slug !== "string") {
@@ -400,7 +400,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     P_entry = P_buyLimit;
   }
   if (P_entry <= 0) {
-    return { code: "bad_entry", netUsd: 0 };
+    return { code: "bad_entry", netUsd: 0, t_buy: t_signal };
   }
 
   let sellIdx = -1;
@@ -530,6 +530,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       legLabel,
       P_entry,
       P_exit: exitPrice,
+      t_buy: t_signal,
       t_entry,
       t_exit,
       exitKind,
@@ -560,6 +561,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       legLabel,
       P_entry,
       P_exit: settlePx,
+      t_buy: t_signal,
       t_entry,
       t_exit,
       floatSettleSource: "chainlink",
@@ -588,6 +590,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
       legLabel,
       P_entry,
       P_exit: pxEnd,
+      t_buy: t_signal,
       t_entry,
       t_exit: tEnd,
       floatSettleSource: "mid",
@@ -609,6 +612,7 @@ export function computeLegPnlFromRows(rows, slug, P_buyLimit, t0, t1, P_sellTarg
     leg,
     legLabel,
     P_entry,
+    t_buy: t_signal,
     t_entry,
     floatLoss,
     floatSettleSource: "fallback",
